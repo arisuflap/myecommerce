@@ -1,0 +1,12 @@
+Put each store's picture in this folder, named exactly:
+
+  dayen.jpg     -> Dayen's Catering Services
+  3m.jpg        -> 3M's Catering Services
+  nataran.jpg   -> Nataran Naval (Nataran Catering Events Services)
+
+The website uses them automatically as the background of the caterer card,
+the package/menu cards, the business page banner, the compare table header
+and the seller dashboard buttons. Landscape photos around 1280px wide work best.
+Until a file exists, a navy/sea gradient is shown instead.
+(A seller can also upload a photo from Seller > Business profile; that one is
+saved in that browser only, so the images/ folder is the way to show it to everyone.)

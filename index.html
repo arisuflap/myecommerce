@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0B2A5B">
+  <title>Naval Catering Marketplace</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%230B2A5B'/%3E%3Cpath d='M32 10v32H18z' fill='%23fff'/%3E%3Cpath d='M35 18v24h14z' fill='%23E9B949'/%3E%3Cpath d='M12 46h40l-6 8H18z' fill='%231B8A9C'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <header class="nav">
+    <div class="wrap nav-in">
+      <a class="brand" href="#/">
+        <svg width="34" height="34" viewBox="0 0 64 64" aria-hidden="true">
+          <rect width="64" height="64" rx="14" fill="#1A4A8A"/>
+          <path d="M31 10v32H17z" fill="#fff"/><path d="M34 18v24h15z" fill="#E9B949"/>
+          <path d="M11 46h42l-6 8H17z" fill="#1B8A9C"/>
+        </svg>
+        <span>Naval Catering<small>Biliran Marketplace</small></span>
+      </a>
+      <nav id="nav"></nav>
+    </div>
+  </header>
+
+  <main class="wrap" id="app"></main>
+
+  <footer>
+    <b>Naval Catering Marketplace</b> · Multi-Seller Catering Services · Naval, Biliran
+  </footer>
+
+  <!-- Supabase library (the online database). It must load BEFORE js/app.js -->
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>

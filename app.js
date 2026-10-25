@@ -27,7 +27,7 @@
 
   // The pages work on this in-memory copy of the database. It is refreshed from
   // Supabase on every page change and after every save.
-  let db = { users: [], sellers: [], packages: [], reservations: [], notifications: [], activity: [], references: [] };
+  let db = { users: [], sellers: [], packages: [], reservations: [], notifications: [], activity: [], references: [], concerns: [] };
   let session = null; // the logged-in Supabase session, or null when nobody is logged in
 
   // The database identifies people with long unique IDs (uuid); the pages use small numbers.
@@ -49,20 +49,22 @@
       jobs.push(
         sb.from('reservations').select('*').order('id', { ascending: true }),
         sb.from('notifications').select('*').order('id', { ascending: false }).limit(100),
-        sb.from('activity').select('*').order('id', { ascending: false }).limit(200)
+        sb.from('activity').select('*').order('id', { ascending: false }).limit(200),
+        sb.from('concerns').select('*').order('id', { ascending: false }).limit(200)
       );
     }
     const res = await Promise.all(jobs);
-    res.forEach(r => { if (r.error) throw r.error; });
+    res.forEach((r, i) => { if (r.error && i !== 7) throw r.error; }); // the concerns list (index 7) may be missing until its SQL is run: the rest of the site still works
     const rows = i => (res[i] && res[i].data) || [];
 
-    const next = { users: [], sellers: [], packages: [], reservations: [], notifications: [], activity: [], references: [] };
+    const next = { users: [], sellers: [], packages: [], reservations: [], notifications: [], activity: [], references: [], concerns: [] };
     next.users = rows(0).map(p => ({ id: nid(p.id), uid: p.id, username: p.username || '', fullName: p.full_name || '', email: p.email || '', phone: p.phone || '', role: p.role, status: p.status, createdAt: p.created_at }));
-    next.sellers = rows(1).map(s => ({ id: s.id, userId: nid(s.user_id), businessName: s.business_name || '', description: s.description || '', address: s.address || '', landmark: s.landmark || '', phone: s.phone || '', email: s.email || '', mapLink: s.map_link || '', photo: s.photo || '', maxPerDay: s.max_per_day || 1, slug: s.slug || '' }));
+    next.sellers = rows(1).map(s => ({ id: s.id, userId: nid(s.user_id), businessName: s.business_name || '', description: s.description || '', address: s.address || '', landmark: s.landmark || '', phone: s.phone || '', email: s.email || '', mapLink: s.map_link || '', photo: s.photo || '', maxPerDay: s.max_per_day || 1, slug: s.slug || '', qrImage: s.qr_image || '', downPct: s.down_payment_pct || 30, payNote: s.payment_note || '' }));
     next.packages = rows(2).map(p => ({ id: p.id, sellerId: p.seller_id, name: p.name || '', description: p.description || '', price: Number(p.price), minGuests: p.min_guests, maxGuests: p.max_guests, menu: p.menu || '', inclusions: p.inclusions || '', eventTypes: p.event_types || '', active: !!p.active, removed: !!p.removed }));
     next.references = rows(3).map(m => ({ id: m.id, sellerId: m.seller_id, category: m.category || '', title: m.title || '', image: m.image || '', active: m.active !== false, createdAt: m.created_at }));
-    next.reservations = rows(4).map(r => ({ id: r.id, customerId: nid(r.customer_id), sellerId: r.seller_id, packageId: r.package_id, date: r.date, eventType: r.event_type || '', location: r.location || '', guests: r.guests, notes: r.notes || '', total: Number(r.total), status: r.status, sellerNote: r.seller_note || '', createdAt: r.created_at, customerName: r.customer_name || '', customerPhone: r.customer_phone || '' }));
-    next.notifications = rows(5).map(n => ({ id: n.id, userId: nid(n.user_id), message: n.message || '', read: !!n.read, createdAt: n.created_at ? new Date(n.created_at).toLocaleString('en-PH') : '' }));
+    next.reservations = rows(4).map(r => ({ id: r.id, customerId: nid(r.customer_id), sellerId: r.seller_id, packageId: r.package_id, date: r.date, eventType: r.event_type || '', location: r.location || '', guests: r.guests, notes: r.notes || '', total: Number(r.total), status: r.status, sellerNote: r.seller_note || '', createdAt: r.created_at, customerName: r.customer_name || '', customerPhone: r.customer_phone || '', payStatus: r.payment_status || 'unpaid', downPayment: Number(r.down_payment || 0), proof: r.payment_proof || '', payRef: r.payment_ref || '', payNote: r.payment_note || '', paidAt: r.paid_at || '', receiptNo: r.receipt_no || '', menuSnap: r.menu_snapshot || '', inclSnap: r.inclusions_snapshot || '' }));
+    next.notifications = rows(5).map(n => ({ id: n.id, userId: nid(n.user_id), message: n.message || '', link: n.link || '', read: !!n.read, createdAt: n.created_at ? new Date(n.created_at).toLocaleString('en-PH') : '' }));
+    next.concerns = rows(7).map(c => ({ id: c.id, userId: nid(c.user_id), name: c.user_name || '', email: c.user_email || '', role: c.user_role || '', topic: c.topic || '', subject: c.subject || '', message: c.message || '', attachment: c.attachment || '', status: c.status, reply: c.admin_reply || '', createdAt: c.created_at, resolvedAt: c.resolved_at || '' }));
     next.activity = rows(6).map(a => ({ id: a.id, at: a.at, actor: a.actor || '', role: a.role || '', text: a.text || '' })).reverse(); // oldest first
 
     // A seller cannot read a customer's account, so the customer's name and phone are
@@ -78,7 +80,7 @@
       }
       if (!hasSeller.has(r.sellerId)) {
         hasSeller.add(r.sellerId);
-        next.sellers.push({ id: r.sellerId, userId: 0, businessName: 'Caterer (no longer listed)', description: '', address: '', landmark: '', phone: '', email: '', mapLink: '', photo: '', maxPerDay: 1, slug: '', stub: true });
+        next.sellers.push({ id: r.sellerId, userId: 0, businessName: 'Caterer (no longer listed)', description: '', address: '', landmark: '', phone: '', email: '', mapLink: '', photo: '', maxPerDay: 1, slug: '', qrImage: '', downPct: 30, payNote: '', stub: true });
       }
       if (!hasPkg.has(r.packageId)) {
         hasPkg.add(r.packageId);
@@ -130,6 +132,77 @@
   }
   const badge = s => `<span class="badge ${esc(s)}">${esc(String(s).charAt(0).toUpperCase() + String(s).slice(1))}</span>`;
   const $ = (sel, root) => (root || document).querySelector(sel);
+
+  // ----- down payment helpers -----
+  const imgOk = u => typeof u === 'string' && u.startsWith(STORE_URL) && !/["'()\s<>\\]/.test(u); // only our own Storage pictures are shown
+  const dueOf = (r, sl) => (r.downPayment > 0 ? r.downPayment : Math.round(r.total * ((sl && sl.downPct) || 30)) / 100);
+  const payBadge = r => r.payStatus === 'received' ? '<span class="badge approved">Down payment paid</span>'
+    : r.payStatus === 'submitted' ? '<span class="badge pending">Proof sent - waiting for caterer</span>'
+    : '<span class="badge pending">Down payment unpaid</span>';
+  const SAFE_LINK = /^#\/(pay|receipt)\/\d+$|^#\/seller\/reservations$|^#\/help$|^#\/admin\/concerns$/;
+  // Contact details shown on the Customer Service page. Replace the empty ones with the real details.
+  const SUPPORT = {
+    phone: '0916 547 6368',
+    email: 'jakesamong@gmail.com',
+    hours: 'Monday – Friday, 8:00 AM – 5:00 PM',
+    address: 'Naval, Biliran, Philippines'
+  };
+  const TOPICS = ['Reservation', 'Payment and receipt', 'Account or login', 'Caterer or seller', 'Website problem (IT support)', 'Other'];
+  function fdatetime(t) {
+    const d = new Date(t);
+    return isNaN(d) ? '' : d.toLocaleString('en-PH', { timeZone: 'Asia/Manila', year: 'numeric', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+  }
+  (function addPayStyles() {
+    const el = document.createElement('style');
+    el.textContent = `
+      .qrbox{text-align:center;margin:12px 0}
+      .qrbox img{max-width:min(320px,100%);height:auto;border:1px solid #d9e2ef;border-radius:12px;background:#fff;padding:8px}
+      .proofthumb{max-width:140px;max-height:140px;border-radius:8px;border:1px solid #d9e2ef;display:block;margin:4px 0}
+      .proofthumb.hidden{display:none}
+      .receipt{max-width:640px;margin:0 auto;background:#fff;color:#14233b;border:1px solid #d9e2ef;border-radius:14px;padding:26px}
+      .receipt h1{margin:0 0 2px;font-size:1.5rem}
+      .receipt .rno{font-weight:700;letter-spacing:.04em}
+      .receipt table{width:100%;border-collapse:collapse;margin:14px 0}
+      .receipt td{padding:7px 4px;border-bottom:1px solid #e6edf6;vertical-align:top}
+      .receipt td:first-child{color:#5a6a82;width:40%}
+      .receipt .big td{font-size:1.1rem;font-weight:700;border-bottom:0}
+      .receipt .paidmark{display:inline-block;border:3px solid #1b8a4a;color:#1b8a4a;font-weight:800;letter-spacing:.12em;padding:4px 14px;border-radius:8px;transform:rotate(-4deg);margin:6px 0}
+      @media print{
+        header.nav,footer,.noprint,.flash{display:none!important}
+        body{background:#fff!important}
+        main.wrap{padding:0!important;margin:0!important;max-width:none!important}
+        .receipt{border:0;box-shadow:none;padding:0}
+      }`;
+    document.head.appendChild(el);
+  })();
+
+  (function addHelpStyles() {
+    const el = document.createElement('style');
+    el.textContent = `
+      .helphero{display:flex;align-items:center;justify-content:space-between;gap:18px;flex-wrap:wrap;padding:34px 28px;margin:0 0 20px;border-radius:16px;color:#fff;background:linear-gradient(135deg,#0B2A5B 0%,#1A4A8A 62%,#1B8A9C 100%)}
+      .helphero h1{margin:4px 0 8px;color:#fff;font-size:clamp(1.7rem,4vw,2.4rem)}
+      .helphero p{margin:0;max-width:520px;color:#dbe7f7}
+      .helphero .eyebrow{color:#E9B949;letter-spacing:.14em;text-transform:uppercase;font-size:.78rem;font-weight:700}
+      .helpbubble{background:#fff;color:#0B2A5B;font-weight:700;padding:16px 20px;border-radius:22px 22px 22px 4px;box-shadow:0 6px 18px rgba(0,0,0,.18)}
+      .helpgrid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.35fr) minmax(0,1fr);gap:18px;align-items:start}
+      @media(max-width:980px){.helpgrid{grid-template-columns:1fr}}
+      .helpcard h2{margin:0 0 6px;font-size:1.3rem}
+      .crow{display:flex;gap:12px;align-items:flex-start;margin:14px 0}
+      .cicon{flex:0 0 40px;height:40px;border-radius:50%;background:#e8f1fb;display:flex;align-items:center;justify-content:center;font-size:1.1rem}
+      .crow b{display:block}
+      details.faq{border:1px solid #d9e2ef;border-radius:10px;margin:8px 0;background:#fff}
+      details.faq summary{cursor:pointer;padding:12px 14px;font-weight:600;list-style:none;display:flex;justify-content:space-between;gap:10px}
+      details.faq summary::-webkit-details-marker{display:none}
+      details.faq summary::after{content:'⌄';font-weight:700}
+      details.faq[open] summary::after{content:'⌃'}
+      details.faq p{margin:0;padding:0 14px 14px;color:#41526b}
+      .helptip{display:flex;gap:12px;align-items:flex-start;margin-top:14px;padding:14px 16px;border-radius:12px;background:#fff7e0;border:1px solid #f1deaa}
+      .concern{margin:0 0 12px}
+      .concern pre{white-space:pre-wrap;font:inherit;margin:6px 0}
+      .replybox{margin-top:8px;padding:10px 12px;border-radius:10px;background:#eef6ee;border:1px solid #cfe5cf}
+    `;
+    document.head.appendChild(el);
+  })();
 
   let flashes = [];
   function flash(msg, type) { flashes.push({ msg, type: type || 'info' }); }
@@ -221,6 +294,30 @@
     img.src = url;
   }
 
+  // Shrinks a chosen picture (QR code, payment screenshot) and shows a preview. Result goes into a hidden field.
+  function readImageInto(file, dataSel, prevSel, maxSide) {
+    if (!file) return;
+    if (!/^image\//.test(file.type)) { alert('Please choose a picture file (JPG or PNG).'); return; }
+    const url = URL.createObjectURL(file), img = new Image();
+    img.onload = () => {
+      const k = Math.min(1, maxSide / Math.max(img.width, img.height));
+      const c = document.createElement('canvas');
+      c.width = Math.max(1, Math.round(img.width * k));
+      c.height = Math.max(1, Math.round(img.height * k));
+      const g = c.getContext('2d');
+      g.fillStyle = '#fff'; g.fillRect(0, 0, c.width, c.height); // a transparent PNG becomes white instead of black
+      g.drawImage(img, 0, 0, c.width, c.height);
+      let q = 0.9, out = c.toDataURL('image/jpeg', q);
+      while (out.length > 450000 && q > 0.5) { q -= 0.08; out = c.toDataURL('image/jpeg', q); }
+      URL.revokeObjectURL(url);
+      const data = $(dataSel), prev = $(prevSel);
+      if (data) data.value = out;
+      if (prev) { prev.src = out; prev.classList.remove('hidden'); }
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); alert('That picture could not be read. Please use a JPG or PNG file.'); };
+    img.src = url;
+  }
+
   // Reference images are resized before being uploaded.
   function readReference(file) {
     if (!file) return;
@@ -271,7 +368,7 @@
   function renderNav() {
     const u = me();
     const unread = u ? db.notifications.filter(n => n.userId === u.id && !n.read).length : 0;
-    let h = `<a href="#/packages">Packages</a><a href="#/sellers">Caterers</a>`;
+    let h = `<a href="#/packages">Packages</a><a href="#/sellers">Caterers</a><a href="#/help">Help</a>`;
     if (u) {
       const home = { admin: ['#/admin', 'Admin'], seller: ['#/seller', 'My Business'], customer: ['#/my-reservations', 'My Reservations'] }[u.role];
       h += `<a href="${home[0]}">${home[1]}</a>`;
@@ -281,6 +378,8 @@
       h += `<a href="#/login">Login</a><a class="btn sm" href="#/register">Register</a>`;
     }
     $('#nav').innerHTML = h;
+    const foot = $('footer');
+    if (foot && !foot.dataset.help) { foot.dataset.help = '1'; foot.insertAdjacentHTML('beforeend', ' · <a href="#/policy/cancellation">Cancellation &amp; Refund Policy</a> · <a href="#/help">Customer Service</a>'); }
   }
 
   function go(hash) { if (location.hash === hash) navigate(); else location.hash = hash; }
@@ -529,7 +628,7 @@
     if (!requireRole('customer')) return;
     const rows = db.reservations.filter(r => r.customerId === me().id).sort((a, b) => b.id - a.id);
     view(`<h1>My reservations</h1>` + (rows.length ? `<div class="tablewrap"><table>
-      <tr><th>#</th><th>Package</th><th>Event</th><th>Guests</th><th>Total</th><th>Status</th><th></th></tr>
+      <tr><th>#</th><th>Package</th><th>Event</th><th>Guests</th><th>Total</th><th>Status</th><th>Down payment</th><th></th></tr>
       ${rows.map(r => {
         const p = pkgById(r.packageId), s = sellerById(r.sellerId);
         return `<tr><td>${r.id}</td>
@@ -537,15 +636,198 @@
           <td>${fdate(r.date)}<br><span class="muted small">${esc(r.eventType)} · ${esc(r.location)}</span></td>
           <td>${r.guests}</td><td>${peso(r.total)}</td>
           <td>${badge(r.status)}${r.sellerNote ? `<br><span class="small muted">Note: ${esc(r.sellerNote)}</span>` : ''}</td>
-          <td>${['pending', 'approved'].includes(r.status) ? `<button class="btn warn sm" data-act="cancel" data-id="${r.id}">Cancel</button>` : ''}</td></tr>`;
+          <td>${r.status !== 'approved' ? '<span class="muted small">—</span>' : `${payBadge(r)}<br><span class="small muted">Due: ${peso(dueOf(r, s))}</span><br>`
+            + (r.payStatus === 'received' ? `<a class="btn sm" href="#/receipt/${r.id}">View receipt</a>` : `<a class="btn sm" href="#/pay/${r.id}">${r.payStatus === 'submitted' ? 'View payment' : 'Pay now'}</a>`)}</td>
+          <td>${['pending', 'approved'].includes(r.status) && r.payStatus !== 'received' ? `<button class="btn warn sm" data-act="cancel" data-id="${r.id}">Cancel</button>` : ''}</td></tr>`;
       }).join('')}</table></div>` : `<p class="muted">You have no reservations yet.</p><a class="btn" href="#/packages">Browse packages</a>`));
+  });
+
+  // The customer pays the down payment by scanning the caterer's QR code, then sends a screenshot of the receipt.
+  add(/^\/pay\/(\d+)$/, ([id]) => {
+    if (!requireRole('customer')) return;
+    const r = db.reservations.find(x => x.id === id && x.customerId === me().id);
+    if (!r) return view(errorPage(404, 'Reservation not found.'));
+    if (r.status !== 'approved') return view(errorPage(403, 'You can pay only after the caterer approves your reservation.'));
+    if (r.payStatus === 'received') return go('#/receipt/' + r.id);
+    const s = sellerById(r.sellerId), p = pkgById(r.packageId), due = dueOf(r, s);
+    const qr = imgOk(s.qrImage)
+      ? `<div class="qrbox"><img src="${esc(s.qrImage)}" alt="Payment QR code of ${esc(s.businessName)}"><div class="small muted">Scan with GCash, Maya or your bank app</div></div>`
+      : `<div class="notice">${esc(s.businessName)} has not uploaded a payment QR code yet. Please contact them${s.phone ? ' at <b>' + esc(s.phone) + '</b>' : ''} for their payment details, then send your proof below.</div>`;
+    const proof = imgOk(r.proof) ? `<p class="small">Proof you sent:</p><a href="${esc(r.proof)}" target="_blank" rel="noopener"><img class="proofthumb" src="${esc(r.proof)}" alt="Your payment proof"></a>${r.payRef ? `<p class="small muted">Reference no.: ${esc(r.payRef)}</p>` : ''}` : '';
+    view(`<div class="card form-card wide"><h1>Pay your down payment</h1>
+      <p class="muted">Reservation #${r.id} · ${esc(p.name)} · ${esc(s.businessName)} · ${fdate(r.date)}</p>
+      <table class="kv"><tr><td>Total</td><td>${peso(r.total)}</td></tr>
+        <tr><td>Down payment (${s.downPct}%)</td><td><b style="font-size:1.25rem">${peso(due)}</b></td></tr>
+        <tr><td>Balance after down payment</td><td>${peso(r.total - due)}</td></tr></table>
+      ${qr}
+      ${s.payNote ? `<p><b>Payment details:</b><br>${esc(s.payNote).replace(/\n/g, '<br>')}</p>` : ''}
+      ${r.payNote ? `<div class="flash error">Caterer's note: ${esc(r.payNote)}</div>` : ''}
+      ${r.payStatus === 'submitted' ? `<div class="notice">Your proof was sent. The caterer will confirm it, and your receipt will appear in your notifications.</div>${proof}` : ''}
+      <p class="small muted">By paying, you agree to the <a href="#/policy/cancellation">Cancellation and Refund Policy</a>.</p>
+      <form class="stack" data-form="payment-proof" data-id="${r.id}">
+        <p class="small muted">1. Pay exactly <b>${peso(due)}</b> using the QR code above. 2. Take a screenshot of your payment receipt. 3. Upload it here.</p>
+        <label>${r.payStatus === 'submitted' ? 'Send a different screenshot (optional)' : 'Screenshot of your payment'}</label>
+        <input type="file" id="proofFile" accept="image/*" ${r.payStatus === 'submitted' ? '' : 'required'}>
+        <img id="proofPrev" class="proofthumb hidden" alt="Preview of your screenshot">
+        <input type="hidden" name="proof" id="proofData">
+        <label>Reference number (optional)</label><input name="ref" maxlength="80" placeholder="e.g. GCash reference number">
+        <p><button class="btn" type="submit">${r.payStatus === 'submitted' ? 'Send again' : 'Send proof of payment'}</button> <a class="btn alt" href="#/my-reservations">Back</a></p>
+      </form></div>`);
+  });
+
+  // Receipt: made automatically once the caterer confirms the down payment. Can be printed or saved as PDF.
+  add(/^\/receipt\/(\d+)$/, ([id]) => {
+    const u = me();
+    if (!u) { flash('Please log in to continue.', 'error'); return go('#/login'); }
+    const r = db.reservations.find(x => x.id === id);
+    const s = r && sellerById(r.sellerId);
+    const allowed = r && (u.role === 'admin' || (u.role === 'customer' && r.customerId === u.id) || (u.role === 'seller' && s && s.userId === u.id));
+    if (!allowed) return view(errorPage(404, 'Receipt not found.'));
+    if (r.payStatus !== 'received') return view(errorPage(404, 'The down payment for this reservation has not been confirmed yet.'));
+    const p = pkgById(r.packageId), c = userById(r.customerId) || {};
+    const name = r.customerName || c.fullName || 'Customer', phone = r.customerPhone || c.phone || '';
+    // The menu is the one saved when the payment was confirmed (so later menu changes do not alter the receipt).
+    const menuItems = lines(r.menuSnap || p.menu), inclItems = lines(r.inclSnap || p.inclusions);
+    const back = { admin: '#/admin/reservations', seller: '#/seller/reservations', customer: '#/my-reservations' }[u.role];
+    view(`<div class="receipt">
+      <div style="display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap">
+        <div><h1>Payment receipt</h1><div class="muted small">Naval Catering Marketplace · Naval, Biliran</div></div>
+        <div style="text-align:right"><div class="rno">${esc(r.receiptNo)}</div><div class="small muted">${esc(fdatetime(r.paidAt))}</div></div>
+      </div>
+      <div class="paidmark">DOWN PAYMENT RECEIVED</div>
+      <table>
+        <tr><td>Received by</td><td><b>${esc(s.businessName)}</b><br><span class="small muted">${esc(s.address)}${s.phone ? ' · ' + esc(s.phone) : ''}</span></td></tr>
+        <tr><td>Paid by</td><td>${esc(name)}${phone ? '<br><span class="small muted">' + esc(phone) + '</span>' : ''}</td></tr>
+        <tr><td>Reservation</td><td>#${r.id} · ${esc(p.name)}</td></tr>
+        <tr><td>Event</td><td>${fdate(r.date)}<br><span class="small muted">${esc(r.eventType)} · ${esc(r.location)} · ${r.guests} guests</span></td></tr>
+        ${menuItems.length ? `<tr><td>Reserved menu</td><td><ul style="margin:0;padding-left:18px">${menuItems.map(m => `<li>${esc(m)}</li>`).join('')}</ul></td></tr>` : ''}
+        ${inclItems.length ? `<tr><td>Inclusions</td><td>${inclItems.map(esc).join(', ')}</td></tr>` : ''}
+        ${r.payRef ? `<tr><td>Payment reference</td><td>${esc(r.payRef)}</td></tr>` : ''}
+        <tr><td>Total package price</td><td>${peso(r.total)}</td></tr>
+        <tr class="big"><td>Down payment received</td><td>${peso(r.downPayment)}</td></tr>
+        <tr><td>Balance to pay the caterer</td><td>${peso(r.total - r.downPayment)}</td></tr>
+      </table>
+      <p class="small muted">This receipt confirms the down payment received by the caterer through the Naval Catering Marketplace. It is not an official BIR receipt. The remaining balance is paid directly to the caterer.</p>
+      <p class="noprint"><button class="btn" data-act="print">Print / Save as PDF</button> <a class="btn alt" href="${back}">Back</a></p>
+    </div>`);
+  });
+
+  /* ---------- Cancellation and Refund Policy (public) ---------- */
+  add(/^\/policy\/cancellation$/, () => {
+    view(`<div class="card form-card wide" style="line-height:1.6"><h1>Cancellation and Refund Policy</h1>
+      <p class="muted">This policy explains how cancellations and refunds work for bookings made through the Naval Catering Marketplace. The marketplace connects customers with local caterers. The catering service is provided by the caterer, and payments are made directly to the caterer (through the caterer's QR code or account), so refunds are given by the caterer.</p>
+
+      <h2>1. Cancellation</h2>
+      <ul>
+        <li><b>Before the caterer accepts your request:</b> you can cancel anytime in <b>My Reservations</b>, free of charge. No payment has been made yet.</li>
+        <li><b>After the caterer accepts, but before the down payment is confirmed:</b> you can still cancel in <b>My Reservations</b> without any fee.</li>
+        <li><b>After the down payment is confirmed:</b> the booking can no longer be cancelled online. Please contact the caterer as early as possible. Whether the down payment is returned depends on the caterer's terms and on how early you cancel.</li>
+        <li><b>On or after the event date:</b> a service that was already provided cannot be cancelled.</li>
+        <li><b>How to cancel:</b> press <b>Cancel</b> in My Reservations, or send a message through <a href="#/help">Customer Service</a> with your <b>reservation number</b>.</li>
+      </ul>
+
+      <h2>2. Refunds</h2>
+      <p>You may ask for a refund in these cases:</p>
+      <ul>
+        <li><b>The caterer cancels</b> or cannot provide the service on the event date: full refund of the payments you made.</li>
+        <li><b>The service does not match the confirmed package:</b> missing or wrong menu items or inclusions, or food that is spoiled. A refund or fair compensation is decided according to what was missing, with evidence (photos or video).</li>
+        <li><b>Wrong or double payment:</b> you paid more than the amount due, or paid twice.</li>
+      </ul>
+
+      <h2>3. Non-refundable</h2>
+      <ul>
+        <li>Services that were already provided in full.</li>
+        <li>Problems caused by the customer or the venue, such as a wrong address, a closed venue or no access to the venue.</li>
+        <li>Change of mind after the caterer confirmed the down payment, unless the caterer agrees to a refund.</li>
+        <li>The remaining balance is paid directly to the caterer and is handled between you and the caterer.</li>
+      </ul>
+
+      <h2>4. How refunds are processed</h2>
+      <ul>
+        <li><b>How to ask:</b> send a message through <a href="#/help">Customer Service</a> (topic <i>Payment and receipt</i>) with your reservation number, your payment screenshot or receipt, and photos or video if the problem is about the food or service.</li>
+        <li><b>Review:</b> every request is reviewed within <b>3–5 working days</b> after we receive your evidence.</li>
+        <li><b>Payment of the refund:</b> if approved, the refund is returned through the <b>original payment method</b> (GCash, bank transfer or other) within <b>7–14 working days</b>.</li>
+        <li>The marketplace helps customers and caterers reach a fair agreement when there is a disagreement.</li>
+      </ul>
+      <p class="small muted">Questions about this policy? Open <a href="#/help">Customer Service</a>.</p>
+      <p><a class="btn alt" href="#/help">Back to Customer Service</a></p></div>`);
+  });
+
+  /* ---------- Customer Service (public page; sending a message needs a login) ---------- */
+  add(/^\/help$/, () => {
+    const u = me();
+    const mine = u && u.role !== 'admin' ? db.concerns.filter(c => c.userId === u.id).sort((a, b) => b.id - a.id) : [];
+    const faqs = [
+      ['How do I make a reservation?', 'Create a customer account, open <b>Packages</b> or a caterer\'s page, choose a package and press <b>Select &amp; reserve</b>. Enter the event date, number of guests, event type and location. The caterer reviews your request and accepts or declines it.'],
+      ['Can I compare packages from different caterers?', 'Yes. In <b>Packages</b>, tick up to four packages and press <b>Compare</b> to see their prices, menus and inclusions side by side.'],
+      ['What payment methods are accepted?', 'After the caterer accepts your request, you pay a <b>down payment</b> by scanning the caterer\'s QR code (GCash, Maya or bank). Then upload a screenshot of your payment. When the caterer confirms it, you receive your receipt automatically. The balance is paid directly to the caterer.'],
+      ['How can I change or cancel my reservation?', 'Open <b>My Reservations</b> and press <b>Cancel</b> while the request is pending or approved and the down payment is not yet confirmed. After the down payment is received, please contact the caterer to change or cancel the booking. See the <a href="#/policy/cancellation">Cancellation and Refund Policy</a>.'],
+      ['How do I create an account?', 'Press <b>Register</b>, choose <b>Customer</b> and fill in your details. Caterers choose <b>Seller</b>; a seller account must be approved by the administrator before it can log in.'],
+      ['Where do I find my receipt?', 'Go to <b>Notifications</b> and press <b>View receipt</b>, or open <b>My Reservations</b>. On the receipt you can press <b>Print / Save as PDF</b>.'],
+      ['I am a caterer in Naval. How do I join?', 'Register as a <b>Seller</b> with your business name and address. The administrator reviews your details and approves your account. After that you can add packages, your payment QR code and your store photo.']
+    ];
+    const contact = (icon, label, value, sub) => `<div class="crow"><div class="cicon">${icon}</div><div><b>${label}</b>${value}${sub ? `<div class="small muted">${sub}</div>` : ''}</div></div>`;
+    const notSet = '<span class="muted">Not set yet</span>';
+    let form;
+    if (!u) form = `<div class="notice">Please <a href="#/login">log in</a> or <a href="#/register">register</a> to send us a message. You can still read the answers and contact details on this page.</div>`;
+    else if (u.role === 'admin') form = `<div class="notice">You are the administrator. Messages from customers and sellers are in <a href="#/admin/concerns">Admin &gt; Concerns</a>.</div>`;
+    else form = `<form class="stack" data-form="concern">
+        <label>Topic</label>
+        <select name="topic" required><option value="">Select a topic</option>${TOPICS.map(t => `<option>${esc(t)}</option>`).join('')}</select>
+        <label>Subject</label><input name="subject" maxlength="100" minlength="3" required placeholder="Enter a short subject">
+        <label>Message</label><textarea name="message" id="concernMsg" rows="5" maxlength="500" minlength="10" required placeholder="Tell us more about your concern…"></textarea>
+        <div class="small muted" style="text-align:right"><span id="concernCount">0</span>/500</div>
+        <label>Attach a screenshot (optional)</label>
+        <input type="file" id="concernFile" accept="image/*">
+        <img id="concernPrev" class="proofthumb hidden" alt="Preview of your screenshot">
+        <input type="hidden" name="attachment" id="concernData">
+        <p><button class="btn" type="submit">Send message</button></p></form>`;
+    view(`<section class="helphero"><div><span class="eyebrow">Customer service</span><h1>We're here to help</h1>
+        <p>Have questions, need assistance, or facing an issue? Our support team is ready to help you with your catering marketplace experience.</p></div>
+        <div class="helpbubble">We're just a message away!</div></section>
+      <div class="helpgrid">
+        <section class="card helpcard"><h2>Contact us</h2><p class="small muted">You can reach us through the following channels. We will get back to you as soon as possible.</p>
+          ${contact('📞', 'Phone', SUPPORT.phone ? `<a href="tel:${esc(SUPPORT.phone.replace(/[^\d+]/g, ''))}">${esc(SUPPORT.phone)}</a>` : notSet, esc(SUPPORT.hours))}
+          ${contact('✉️', 'Email', SUPPORT.email ? `<a href="mailto:${esc(SUPPORT.email)}">${esc(SUPPORT.email)}</a>` : notSet, 'Or use the message form')}
+          ${contact('📍', 'Address', esc(SUPPORT.address), '')}
+          ${contact('🕘', 'Support hours', esc(SUPPORT.hours), '')}
+        </section>
+        <div>
+          <section class="card helpcard"><h2>Frequently asked questions</h2><p class="small muted">Find answers to the most common questions about the marketplace.</p>
+            ${faqs.map((f, i) => `<details class="faq"><summary>${i + 1}. ${esc(f[0])}</summary><p>${f[1]}</p></details>`).join('')}
+          </section>
+          <div class="helptip"><span style="font-size:1.4rem">💡</span><div><b>Quick tip</b><div class="small muted">For faster help, check the questions above first. You might find the answer you are looking for.</div></div></div>
+        </div>
+        <section class="card helpcard"><h2>Submit a concern</h2><p class="small muted">Did not find what you need? Send us a message and we will get back to you as soon as possible.</p>${form}</section>
+      </div>
+      ${mine.length ? `<h2 style="margin-top:26px">My concerns</h2>${mine.map(c => `<div class="card concern">
+        <div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap"><b>#${c.id} · ${esc(c.subject)}</b>${c.status === 'resolved' ? '<span class="badge approved">Answered</span>' : '<span class="badge pending">Waiting for reply</span>'}</div>
+        <div class="small muted">${esc(c.topic)} · ${esc(fdatetime(c.createdAt))}</div><pre>${esc(c.message)}</pre>
+        ${imgOk(c.attachment) ? `<a href="${esc(c.attachment)}" target="_blank" rel="noopener"><img class="proofthumb" src="${esc(c.attachment)}" alt="Your attachment"></a>` : ''}
+        ${c.reply ? `<div class="replybox"><b>Reply from the administrator</b><pre>${esc(c.reply)}</pre></div>` : ''}</div>`).join('')}` : ''}`);
+  });
+
+  // Administrator: inbox of concerns
+  add(/^\/admin\/concerns$/, (_, q) => {
+    if (!requireRole('admin')) return;
+    const status = q.get('status') || 'open';
+    const rows = db.concerns.filter(c => status === 'all' || c.status === status).sort((a, b) => b.id - a.id);
+    const filt = [['open', 'Open'], ['resolved', 'Answered'], ['all', 'All']].map(([k, l]) => `<a href="#/admin/concerns?status=${k}" style="${status === k ? 'font-weight:700' : ''}">${l}</a>`).join(' · ');
+    view(`<h1>Concerns</h1>${adminNav('concerns')}<p class="small">Filter: ${filt}</p>` + (rows.length ? rows.map(c => `<div class="card concern">
+      <div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap"><b>#${c.id} · ${esc(c.subject)}</b>${c.status === 'resolved' ? '<span class="badge approved">Answered</span>' : '<span class="badge pending">Open</span>'}</div>
+      <div class="small muted">${esc(c.topic)} · from ${esc(c.name)} (${esc(c.role)})${c.email ? ' · ' + esc(c.email) : ''} · ${esc(fdatetime(c.createdAt))}</div>
+      <pre>${esc(c.message)}</pre>
+      ${imgOk(c.attachment) ? `<a href="${esc(c.attachment)}" target="_blank" rel="noopener"><img class="proofthumb" src="${esc(c.attachment)}" alt="Attachment"></a>` : ''}
+      ${c.status === 'open' ? `<label>Your reply</label><textarea id="reply-${c.id}" rows="3" maxlength="1000" placeholder="Write the answer the person will see"></textarea>
+        <p><button class="btn sm" data-act="resolve-concern" data-id="${c.id}">Send reply and mark as answered</button></p>`
+        : `<div class="replybox"><b>Your reply</b> <span class="small muted">${esc(fdatetime(c.resolvedAt))}</span><pre>${esc(c.reply)}</pre></div>`}</div>`).join('') : '<p class="muted">No concerns to show.</p>'));
   });
 
   add(/^\/notifications$/, () => {
     const u = me();
     if (!u) { flash('Please log in to continue.', 'error'); return go('#/login'); }
     const items = db.notifications.filter(n => n.userId === u.id).sort((a, b) => b.id - a.id).slice(0, 100);
-    view(`<h1>Notifications</h1>` + (items.length ? items.map(n => `<div class="card" style="margin-bottom:10px"><div>${esc(n.message)}</div><div class="muted small">${esc(n.createdAt)}</div></div>`).join('') : '<p class="muted">Nothing here yet.</p>'));
+    view(`<h1>Notifications</h1>` + (items.length ? items.map(n => `<div class="card" style="margin-bottom:10px"><div>${esc(n.message)}</div>${SAFE_LINK.test(n.link) ? `<p style="margin:8px 0 2px"><a class="btn sm" href="${esc(n.link)}">${n.link.startsWith('#/receipt') ? 'View receipt' : n.link.startsWith('#/pay') ? 'Pay down payment' : 'Open'}</a></p>` : ''}<div class="muted small">${esc(n.createdAt)}</div></div>`).join('') : '<p class="muted">Nothing here yet.</p>'));
     const unread = items.filter(n => !n.read).map(n => n.id);
     items.forEach(n => { n.read = true; });
     if (unread.length) sb.from('notifications').update({ read: true }).in('id', unread).then(() => {}, () => {});
@@ -559,7 +841,10 @@
     const mine = db.reservations.filter(r => r.sellerId === s.id);
     const upcoming = mine.filter(r => r.status === 'approved' && r.date >= todayStr()).sort((a, b) => a.date.localeCompare(b.date)).slice(0, 5);
     const revenue = mine.filter(r => r.status === 'approved').reduce((t, r) => t + r.total, 0);
+    const toConfirm = mine.filter(r => r.status === 'approved' && r.payStatus === 'submitted').length;
     view(`<section class="bizhero ph sp-${s.id}"><span class="eyebrow">My business</span><h1>${esc(s.businessName)}</h1><p>Seller dashboard — you can only see and manage your own business records.</p></section>
+      ${!imgOk(s.qrImage) ? '<div class="notice">Customers pay their down payment by scanning your QR code. <a href="#/seller/profile">Upload your GCash / bank QR code</a> in your business profile.</div>' : ''}
+      ${toConfirm ? `<div class="notice"><b>${toConfirm}</b> payment proof${toConfirm > 1 ? 's are' : ' is'} waiting for you. <a href="#/seller/reservations?status=approved">Review and confirm</a>.</div>` : ''}
       <div class="stats">
         <div class="stat"><b>${mine.filter(r => r.status === 'pending').length}</b><span>Pending requests</span></div>
         <div class="stat"><b>${mine.filter(r => r.status === 'approved').length}</b><span>Approved events</span></div>
@@ -616,6 +901,19 @@
       <input type="hidden" name="photo" id="photoData" value="">
       ${s.photo ? '<label class="chk"><input type="checkbox" name="removePhoto" value="1"> Remove my uploaded photo</label>' : ''}
       <p class="small muted">The photo you upload here is saved online, so every visitor sees it as your store picture.</p>
+      <h3 style="margin-top:18px">Down payment (QR code)</h3>
+      <p class="small muted">After you accept a reservation, the customer pays the down payment by scanning your QR code, then sends a screenshot. When you confirm it, the customer receives a receipt automatically.</p>
+      <label>Payment QR code (GCash, Maya or bank)</label>
+      ${imgOk(s.qrImage) ? `<div class="qrbox" style="text-align:left"><img src="${esc(s.qrImage)}" alt="Your current QR code" style="max-width:200px"></div>` : ''}
+      <img id="qrPrev" class="proofthumb hidden" alt="New QR code preview">
+      <input type="file" id="qrFile" accept="image/*">
+      <input type="hidden" name="qr" id="qrData" value="">
+      ${imgOk(s.qrImage) ? '<label class="chk"><input type="checkbox" name="removeQr" value="1"> Remove my QR code</label>' : ''}
+      <label>Account name and number (shown to the customer)</label>
+      <textarea name="payNote" maxlength="300" placeholder="e.g. GCash: Juan Dela Cruz 0917 123 4567">${esc(s.payNote)}</textarea>
+      <label>Down payment (% of the total)</label>
+      <input type="number" name="downPct" min="10" max="100" step="1" value="${s.downPct}" required>
+      <p class="small muted">Applies to reservations you accept from now on.</p>
       <label>Maximum events you can handle per day</label>
       <input type="number" name="maxPerDay" min="1" max="20" value="${s.maxPerDay}" required>
       <p class="small muted">Once this many events are approved on a date, new requests for that date are blocked.</p>
@@ -681,7 +979,7 @@
     const tabs = [['', 'All'], ['pending', 'Pending'], ['approved', 'Approved'], ['rejected', 'Rejected'], ['cancelled', 'Cancelled']]
       .map(([k, l]) => `<a class="btn ${status === k ? '' : 'alt'} sm" href="#/seller/reservations${k ? '?status=' + k : ''}">${l}</a>`).join(' ');
     view(`<h1>Reservation requests</h1><p>${tabs}</p>` + (rows.length ? `<div class="tablewrap"><table>
-      <tr><th>#</th><th>Customer</th><th>Package</th><th>Event</th><th>Total</th><th>Status</th><th>Action</th></tr>
+      <tr><th>#</th><th>Customer</th><th>Package</th><th>Event</th><th>Total</th><th>Status</th><th>Down payment</th><th>Action</th></tr>
       ${rows.map(r => {
         const c = userById(r.customerId), booked = approvedCount(s.id, r.date), full = booked >= s.maxPerDay;
         return `<tr><td>${r.id}</td><td>${esc(c.fullName)}<br><span class="muted small">${esc(c.phone)}</span></td>
@@ -691,6 +989,10 @@
             ${r.status === 'pending' ? `<br><span class="small ${full ? '' : 'muted'}" ${full ? 'style="color:var(--danger);font-weight:600"' : ''}>Date availability: ${booked}/${s.maxPerDay} booked</span>` : ''}</td>
           <td>${peso(r.total)}</td>
           <td>${badge(r.status)}${r.sellerNote ? `<br><span class="small muted">${esc(r.sellerNote)}</span>` : ''}</td>
+          <td>${r.status !== 'approved' ? '<span class="muted small">—</span>' : `${payBadge(r)}<br><span class="small muted">Due: ${peso(dueOf(r, s))}</span>`
+            + (r.payStatus === 'received' ? `<br><span class="small muted">${esc(r.receiptNo)}</span><br><a class="btn alt sm" href="#/receipt/${r.id}">View receipt</a>` : '')
+            + (r.payStatus === 'submitted' ? `<br>${imgOk(r.proof) ? `<a href="${esc(r.proof)}" target="_blank" rel="noopener"><img class="proofthumb" src="${esc(r.proof)}" alt="Payment proof"></a>` : ''}${r.payRef ? `<span class="small">Ref: ${esc(r.payRef)}</span><br>` : ''}` : '')
+            + (r.payStatus !== 'received' ? `<br><button class="btn sm" data-act="confirm-payment" data-id="${r.id}">Confirm payment received</button>` + (r.payStatus === 'submitted' ? ` <button class="btn warn sm" data-act="reject-payment" data-id="${r.id}">Not valid</button>` : '') : '')}</td>
           <td>${r.status === 'pending' ? `<input id="note-${r.id}" placeholder="Note to customer (optional)" style="margin-bottom:6px">
             <button class="btn sm" data-act="approve" data-id="${r.id}" ${full ? 'disabled' : ''}>Accept</button>
             <button class="btn warn sm" data-act="reject" data-id="${r.id}">Reject</button>` : ''}</td></tr>`;
@@ -699,7 +1001,7 @@
 
   /* ---------- 8. Admin pages ---------- */
   function adminNav(active) {
-    const items = [['dash', '#/admin', 'Overview'], ['users', '#/admin/users', 'Users'], ['sellers', '#/admin/sellers', 'Seller approvals'], ['listings', '#/admin/listings', 'Listings'], ['res', '#/admin/reservations', 'Reservations'], ['activity', '#/admin/activity', 'Reports &amp; activity']];
+    const items = [['dash', '#/admin', 'Overview'], ['users', '#/admin/users', 'Users'], ['sellers', '#/admin/sellers', 'Seller approvals'], ['listings', '#/admin/listings', 'Listings'], ['res', '#/admin/reservations', 'Reservations'], ['activity', '#/admin/activity', 'Reports &amp; activity'], ['concerns', '#/admin/concerns', 'Concerns' + (db.concerns.some(c => c.status === 'open') ? ' (' + db.concerns.filter(c => c.status === 'open').length + ')' : '')]];
     return `<div class="menu-links">${items.map(([k, h, l]) => `<a class="btn ${k === active ? '' : 'alt'} sm" href="${h}">${l}</a>`).join('')}</div>`;
   }
 
@@ -815,11 +1117,12 @@
     const filt = [['', 'All'], ['pending', 'Pending'], ['approved', 'Approved'], ['rejected', 'Rejected'], ['cancelled', 'Cancelled']]
       .map(([k, l]) => `<a href="#/admin/reservations${k ? '?status=' + k : ''}" style="${status === k ? 'font-weight:700' : ''}">${l}</a>`).join(' · ');
     view(`<h1>Monitor reservations</h1>${adminNav('res')}<p class="small">Filter: ${filt}</p>` + (rows.length ? `<div class="tablewrap"><table>
-      <tr><th>#</th><th>Customer</th><th>Caterer / package</th><th>Event</th><th>Guests</th><th>Total</th><th>Status</th></tr>
+      <tr><th>#</th><th>Customer</th><th>Caterer / package</th><th>Event</th><th>Guests</th><th>Total</th><th>Status</th><th>Down payment</th></tr>
       ${rows.map(r => `<tr><td>${r.id}</td><td>${esc(userById(r.customerId).fullName)}</td>
         <td>${esc(sellerById(r.sellerId).businessName)}<br><span class="muted small">${esc(pkgById(r.packageId).name)}</span></td>
         <td>${fdate(r.date)}<br><span class="muted small">${esc(r.eventType)} · ${esc(r.location)}</span></td>
-        <td>${r.guests}</td><td>${peso(r.total)}</td><td>${badge(r.status)}</td></tr>`).join('')}</table></div>` : '<p class="muted">No reservations yet.</p>'));
+        <td>${r.guests}</td><td>${peso(r.total)}</td><td>${badge(r.status)}</td>
+        <td>${r.status === 'approved' ? payBadge(r) + (r.payStatus === 'received' ? `<br><span class="small muted">${peso(r.downPayment)} · ${esc(r.receiptNo)}</span>` : '') : '<span class="muted small">—</span>'}</td></tr>`).join('')}</table></div>` : '<p class="muted">No reservations yet.</p>'));
   });
 
   /* ---------- Form handlers (what happens when a form is submitted) ---------- */
@@ -925,6 +1228,43 @@
       go('#/my-reservations');
     },
 
+    async concern(d) {
+      const u = me();
+      if (!u) { flash('Please log in to send a message.', 'error'); return go('#/login'); }
+      if (u.role === 'admin') return go('#/admin/concerns');
+      const topic = String(d.topic || '').trim(), subject = String(d.subject || '').trim(), message = String(d.message || '').trim();
+      if (!TOPICS.includes(topic)) { flash('Please choose a topic.', 'error'); return route(); }
+      if (subject.length < 3) { flash('Please enter a short subject.', 'error'); return route(); }
+      if (message.length < 10 || message.length > 500) { flash('Your message must be between 10 and 500 characters.', 'error'); return route(); }
+      let attachment = '';
+      if (d.attachment) {
+        if (!(DATA_PHOTO_RE.test(d.attachment) && d.attachment.length < 700000)) { flash('That picture could not be used. Try a smaller JPG or PNG.', 'error'); return route(); }
+        attachment = await uploadImage(d.attachment, 'concern');
+      }
+      const { data: id, error } = await sb.rpc('submit_concern', { p_topic: topic, p_subject: subject, p_message: message, p_attachment: attachment });
+      if (error) { flash(error.message, 'error'); return route(); }
+      logAct(`Sent concern #${id}: ${subject}`);
+      await reload('Your message was sent. We will reply as soon as possible.');
+    },
+
+    async 'payment-proof'(d, form) {
+      if (!requireRole('customer')) return;
+      const r = db.reservations.find(x => x.id === Number(form.dataset.id) && x.customerId === me().id);
+      if (!r || r.status !== 'approved') { flash('You can pay only for an approved reservation.', 'error'); return go('#/my-reservations'); }
+      if (r.payStatus === 'received') return go('#/receipt/' + r.id);
+      let proof = r.payStatus === 'submitted' ? r.proof : '';
+      if (d.proof) {
+        if (!(DATA_PHOTO_RE.test(d.proof) && d.proof.length < 700000)) { flash('That picture could not be used. Try a smaller JPG or PNG.', 'error'); return route(); }
+        proof = await uploadImage(d.proof, 'proof');
+      }
+      if (!proof) { flash('Please choose the screenshot of your payment first.', 'error'); return route(); }
+      const { error } = await sb.rpc('submit_payment_proof', { p_id: r.id, p_proof: proof, p_ref: String(d.ref || '').trim() });
+      if (error) { flash(error.message, 'error'); await refreshAll(); return route(); }
+      logAct(`Sent proof of down payment for reservation #${r.id}`);
+      flash('Proof of payment sent. The caterer will confirm it and your receipt will appear in your notifications.', 'success');
+      go('#/my-reservations');
+    },
+
     async profile(d) {
       if (!requireRole('seller')) return;
       const s = mySeller(), cap = parseInt(d.maxPerDay, 10);
@@ -934,12 +1274,20 @@
       if (email && !email.includes('@')) { flash('Enter a valid business email address.', 'error'); return route(); }
       if ((d.mapLink || '').trim() && !map) { flash('That is not a Google Maps link. Paste a link that starts with https://www.google.com/maps or https://maps.app.goo.gl, or the embed code from Google Maps.', 'error'); return route(); }
       if (d.photo && !(DATA_PHOTO_RE.test(d.photo) && d.photo.length < 700000)) { flash('That picture could not be used. Try a smaller JPG or PNG.', 'error'); return route(); }
+      const downPct = parseInt(d.downPct, 10);
+      if (!(downPct >= 10 && downPct <= 100)) { flash('The down payment must be between 10% and 100%.', 'error'); return route(); }
+      if (d.qr && !(DATA_PHOTO_RE.test(d.qr) && d.qr.length < 700000)) { flash('That QR code picture could not be used. Try a smaller JPG or PNG.', 'error'); return route(); }
+      const oldQr = s.qrImage;
+      let qrImage = oldQr;
+      if (d.removeQr) qrImage = '';
+      else if (d.qr) qrImage = await uploadImage(d.qr, 'qr');
       const oldPhoto = s.photo;
       let photo = oldPhoto;
       if (d.removePhoto) photo = '';
       else if (d.photo) photo = await uploadImage(d.photo, 'store');
-      await change(sb.from('sellers').update({ business_name: d.businessName.trim(), description: d.description.trim(), address: d.address.trim(), landmark: (d.landmark || '').trim(), phone: d.phone.trim(), email, map_link: map, photo, max_per_day: cap }).eq('id', s.id));
+      await change(sb.from('sellers').update({ business_name: d.businessName.trim(), description: d.description.trim(), address: d.address.trim(), landmark: (d.landmark || '').trim(), phone: d.phone.trim(), email, map_link: map, photo, max_per_day: cap, qr_image: qrImage, down_payment_pct: downPct, payment_note: (d.payNote || '').trim().slice(0, 300) }).eq('id', s.id));
       if (oldPhoto && oldPhoto !== photo) removeImage(oldPhoto);
+      if (oldQr && oldQr !== qrImage) removeImage(oldQr);
       logAct('Updated the business profile');
       flash('Business profile updated.', 'success'); go('#/seller');
     },
@@ -1036,6 +1384,43 @@
       await reload('Reference removed.');
     },
 
+    print() { window.print(); },
+
+    async 'resolve-concern'(id) {
+      if (!requireRole('admin')) return;
+      const c = db.concerns.find(x => x.id === id);
+      if (!c || c.status !== 'open') return;
+      const el = document.getElementById('reply-' + id), reply = el ? el.value.trim() : '';
+      if (reply.length < 3) { flash('Write a short reply first.', 'error'); return route(); }
+      const { error } = await sb.rpc('resolve_concern', { p_id: id, p_reply: reply });
+      if (error) { flash(error.message, 'error'); await refreshAll(); return route(); }
+      logAct(`Answered concern #${id}`);
+      await reload('Reply sent. The concern is marked as answered.');
+    },
+
+    async 'confirm-payment'(id) {
+      if (!requireRole('seller')) return;
+      const r = db.reservations.find(x => x.id === id && x.sellerId === mySeller().id);
+      if (!r || r.status !== 'approved') return;
+      if (!confirm('Confirm that you received the down payment of ' + peso(dueOf(r, mySeller())) + '? The customer will get a receipt automatically.')) return;
+      const { error } = await sb.rpc('confirm_payment', { p_id: id });
+      if (error) { flash(error.message, 'error'); await refreshAll(); return route(); }
+      logAct(`Confirmed the down payment of reservation #${r.id}`);
+      await reload('Down payment confirmed. The receipt was sent to the customer.');
+    },
+
+    async 'reject-payment'(id) {
+      if (!requireRole('seller')) return;
+      const r = db.reservations.find(x => x.id === id && x.sellerId === mySeller().id);
+      if (!r || r.payStatus !== 'submitted') return;
+      const note = prompt('Why is the payment proof not valid? (the customer will see this)', 'The amount or the receipt does not match.');
+      if (note === null) return;
+      const { error } = await sb.rpc('reject_payment', { p_id: id, p_note: note });
+      if (error) { flash(error.message, 'error'); await refreshAll(); return route(); }
+      logAct(`Asked the customer to resend the payment proof of reservation #${r.id}`);
+      await reload('The customer was asked to send the proof again.');
+    },
+
     approve(id) { return decide(id, 'approved'); },
     reject(id) { return decide(id, 'rejected'); },
 
@@ -1093,7 +1478,7 @@
     const { error } = await sb.rpc('decide_reservation', { p_id: id, p_status: status, p_note: note });
     if (error) { flash(error.message, 'error'); await refreshAll(); return route(); }
     logAct(`${status === 'approved' ? 'Approved' : 'Rejected'} reservation #${r.id} (${(userById(r.customerId) || {}).fullName || 'customer'}, ${r.date})`);
-    await reload(status === 'approved' ? 'Reservation approved.' : 'Reservation rejected.');
+    await reload(status === 'approved' ? 'Reservation approved. The customer was asked to pay the down payment.' : 'Reservation rejected.');
   }
 
   async function sellerDecision(id, status) {
@@ -1165,6 +1550,9 @@
     if (e.target.id === 'roleSel') $('#sellerFields').classList.toggle('hidden', e.target.value !== 'seller');
     if (e.target.id === 'photoFile') readPhoto(e.target.files && e.target.files[0]);
     if (e.target.id === 'referenceFile') readReference(e.target.files && e.target.files[0]);
+    if (e.target.id === 'concernFile') readImageInto(e.target.files && e.target.files[0], '#concernData', '#concernPrev', 1100);
+    if (e.target.id === 'qrFile') readImageInto(e.target.files && e.target.files[0], '#qrData', '#qrPrev', 1000);
+    if (e.target.id === 'proofFile') readImageInto(e.target.files && e.target.files[0], '#proofData', '#proofPrev', 1100);
     if (e.target.classList && e.target.classList.contains('cmp-box')) {
       const boxes = [...document.querySelectorAll('.cmp-box')];
       const n = boxes.filter(b => b.checked).length;
@@ -1174,6 +1562,7 @@
   });
 
   document.addEventListener('input', e => {
+    if (e.target.id === 'concernMsg') { const n = $('#concernCount'); if (n) n.textContent = e.target.value.length; }
     if (e.target.id === 'guests') {
       const n = parseInt(e.target.value, 10) || 0;
       $('#total').textContent = peso(Number(e.target.dataset.price) * n);

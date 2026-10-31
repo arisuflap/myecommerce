@@ -39,6 +39,8 @@
   // Loads everything the current visitor is allowed to see (the database decides what that is).
   async function refreshAll() {
     const uid = session && session.user ? session.user.id : null;
+    // Cancels reservations whose down payment deadline has passed (does nothing, and is ignored, if the SQL update was not run yet).
+    if (uid) { try { await sb.rpc('expire_unpaid_reservations'); } catch (e) { /* ignore */ } }
     const jobs = [
       sb.from('profiles').select('*').order('created_at', { ascending: true }),
       sb.from('sellers').select('*').order('id', { ascending: true }),
@@ -59,10 +61,11 @@
 
     const next = { users: [], sellers: [], packages: [], reservations: [], notifications: [], activity: [], references: [], concerns: [] };
     next.users = rows(0).map(p => ({ id: nid(p.id), uid: p.id, username: p.username || '', fullName: p.full_name || '', email: p.email || '', phone: p.phone || '', role: p.role, status: p.status, createdAt: p.created_at }));
-    next.sellers = rows(1).map(s => ({ id: s.id, userId: nid(s.user_id), businessName: s.business_name || '', description: s.description || '', address: s.address || '', landmark: s.landmark || '', phone: s.phone || '', email: s.email || '', mapLink: s.map_link || '', photo: s.photo || '', maxPerDay: s.max_per_day || 1, slug: s.slug || '', qrImage: s.qr_image || '', downPct: s.down_payment_pct || 30, payNote: s.payment_note || '' }));
-    next.packages = rows(2).map(p => ({ id: p.id, sellerId: p.seller_id, name: p.name || '', description: p.description || '', price: Number(p.price), minGuests: p.min_guests, maxGuests: p.max_guests, menu: p.menu || '', inclusions: p.inclusions || '', eventTypes: p.event_types || '', active: !!p.active, removed: !!p.removed }));
+    next.sellers = rows(1).map(s => ({ id: s.id, userId: nid(s.user_id), businessName: s.business_name || '', description: s.description || '', address: s.address || '', landmark: s.landmark || '', phone: s.phone || '', email: s.email || '', mapLink: s.map_link || '', photo: s.photo || '', maxPerDay: s.max_per_day || 1, slug: s.slug || '', qrImage: s.qr_image || '', downPct: s.down_payment_pct || 30, payNote: s.payment_note || '', payWindow: s.pay_window_hours || 24 }));
+    next.packages = rows(2).map(p => ({ id: p.id, sellerId: p.seller_id, name: p.name || '', description: p.description || '', price: Number(p.price), minGuests: p.min_guests, maxGuests: p.max_guests, menu: p.menu || '', inclusions: p.inclusions || '', eventTypes: p.event_types || '', priceType: p.price_type === 'package' ? 'package' : 'head', active: !!p.active, removed: !!p.removed }));
+    next.hasPriceType = rows(2).length ? rows(2).some(p => 'price_type' in p) : null; // null = unknown (no packages yet)
     next.references = rows(3).map(m => ({ id: m.id, sellerId: m.seller_id, category: m.category || '', title: m.title || '', image: m.image || '', active: m.active !== false, createdAt: m.created_at }));
-    next.reservations = rows(4).map(r => ({ id: r.id, customerId: nid(r.customer_id), sellerId: r.seller_id, packageId: r.package_id, date: r.date, eventType: r.event_type || '', location: r.location || '', guests: r.guests, notes: r.notes || '', total: Number(r.total), status: r.status, sellerNote: r.seller_note || '', createdAt: r.created_at, customerName: r.customer_name || '', customerPhone: r.customer_phone || '', payStatus: r.payment_status || 'unpaid', downPayment: Number(r.down_payment || 0), proof: r.payment_proof || '', payRef: r.payment_ref || '', payNote: r.payment_note || '', paidAt: r.paid_at || '', receiptNo: r.receipt_no || '', menuSnap: r.menu_snapshot || '', inclSnap: r.inclusions_snapshot || '' }));
+    next.reservations = rows(4).map(r => ({ id: r.id, customerId: nid(r.customer_id), sellerId: r.seller_id, packageId: r.package_id, date: r.date, eventType: r.event_type || '', location: r.location || '', guests: r.guests, notes: r.notes || '', total: Number(r.total), status: r.status, sellerNote: r.seller_note || '', createdAt: r.created_at, customerName: r.customer_name || '', customerPhone: r.customer_phone || '', payStatus: r.payment_status || 'unpaid', downPayment: Number(r.down_payment || 0), proof: r.payment_proof || '', payRef: r.payment_ref || '', payNote: r.payment_note || '', paidAt: r.paid_at || '', receiptNo: r.receipt_no || '', menuSnap: r.menu_snapshot || '', inclSnap: r.inclusions_snapshot || '', payBy: r.pay_by || '' }));
     next.notifications = rows(5).map(n => ({ id: n.id, userId: nid(n.user_id), message: n.message || '', link: n.link || '', read: !!n.read, createdAt: n.created_at ? new Date(n.created_at).toLocaleString('en-PH') : '' }));
     next.concerns = rows(7).map(c => ({ id: c.id, userId: nid(c.user_id), name: c.user_name || '', email: c.user_email || '', role: c.user_role || '', topic: c.topic || '', subject: c.subject || '', message: c.message || '', attachment: c.attachment || '', status: c.status, reply: c.admin_reply || '', createdAt: c.created_at, resolvedAt: c.resolved_at || '' }));
     next.activity = rows(6).map(a => ({ id: a.id, at: a.at, actor: a.actor || '', role: a.role || '', text: a.text || '' })).reverse(); // oldest first
@@ -80,11 +83,11 @@
       }
       if (!hasSeller.has(r.sellerId)) {
         hasSeller.add(r.sellerId);
-        next.sellers.push({ id: r.sellerId, userId: 0, businessName: 'Caterer (no longer listed)', description: '', address: '', landmark: '', phone: '', email: '', mapLink: '', photo: '', maxPerDay: 1, slug: '', qrImage: '', downPct: 30, payNote: '', stub: true });
+        next.sellers.push({ id: r.sellerId, userId: 0, businessName: 'Caterer (no longer listed)', description: '', address: '', landmark: '', phone: '', email: '', mapLink: '', photo: '', maxPerDay: 1, slug: '', qrImage: '', downPct: 30, payNote: '', payWindow: 24, stub: true });
       }
       if (!hasPkg.has(r.packageId)) {
         hasPkg.add(r.packageId);
-        next.packages.push({ id: r.packageId, sellerId: r.sellerId, name: 'Package (no longer listed)', description: '', price: 0, minGuests: 0, maxGuests: 0, menu: '', inclusions: '', eventTypes: '', active: false, removed: true, stub: true });
+        next.packages.push({ id: r.packageId, sellerId: r.sellerId, name: 'Package (no longer listed)', description: '', price: 0, minGuests: 0, maxGuests: 0, menu: '', inclusions: '', eventTypes: '', priceType: 'head', active: false, removed: true, stub: true });
       }
     });
     db = next;
@@ -135,10 +138,20 @@
 
   // ----- down payment helpers -----
   const imgOk = u => typeof u === 'string' && u.startsWith(STORE_URL) && !/["'()\s<>\\]/.test(u); // only our own Storage pictures are shown
+  // A package is priced either per head (price x guests) or as one price for the whole package.
+  const flatPrice = p => p.priceType === 'package';
+  const unitLabel = p => (flatPrice(p) ? 'per package' : '/ head');
+  const totalFor = (p, n) => (flatPrice(p) ? p.price : p.price * n);
   const dueOf = (r, sl) => (r.downPayment > 0 ? r.downPayment : Math.round(r.total * ((sl && sl.downPct) || 30)) / 100);
   const payBadge = r => r.payStatus === 'received' ? '<span class="badge approved">Down payment paid</span>'
     : r.payStatus === 'submitted' ? '<span class="badge pending">Proof sent - waiting for caterer</span>'
     : '<span class="badge pending">Down payment unpaid</span>';
+  // "Pay before ..." line shown while the down payment is still unpaid
+  const payByNote = r => {
+    if (r.status !== 'approved' || r.payStatus !== 'unpaid' || !r.payBy) return '';
+    const when = esc(fdatetime(r.payBy)), late = new Date(r.payBy) - Date.now() <= 0;
+    return `<br><span class="small" style="color:var(--danger);font-weight:600">${late ? 'Deadline passed (' + when + ') - may be cancelled soon' : 'Pay before ' + when}</span>`;
+  };
   const SAFE_LINK = /^#\/(pay|receipt)\/\d+$|^#\/seller\/reservations$|^#\/help$|^#\/admin\/concerns$/;
   // Contact details shown on the Customer Service page. Replace the empty ones with the real details.
   const SUPPORT = {
@@ -210,8 +223,10 @@
   function me() {
     if (!session || !session.user) return null;
     const u = db.users.find(x => x.uid === session.user.id);
-    return u && u.status === 'active' ? u : null;
+    // A seller who is still waiting for approval may log in and prepare the shop; the shop stays hidden from customers.
+    return u && (u.status === 'active' || (u.role === 'seller' && u.status === 'pending')) ? u : null;
   }
+  const isPendingSeller = u => !!u && u.role === 'seller' && u.status === 'pending';
   const mySeller = () => db.sellers.find(s => s.userId === me().id);
   const sellerById = id => db.sellers.find(s => s.id === id);
   const userById = id => db.users.find(u => u.id === id);
@@ -379,7 +394,7 @@
     }
     $('#nav').innerHTML = h;
     const foot = $('footer');
-    if (foot && !foot.dataset.help) { foot.dataset.help = '1'; foot.insertAdjacentHTML('beforeend', ' · <a href="#/policy/cancellation">Cancellation &amp; Refund Policy</a> · <a href="#/help">Customer Service</a>'); }
+    if (foot && !foot.dataset.help) { foot.dataset.help = '1'; foot.insertAdjacentHTML('beforeend', ' · <a href="#/terms">Terms</a> · <a href="#/privacy">Privacy</a> · <a href="#/policy/cancellation">Cancellation &amp; Refund Policy</a> · <a href="#/help">Customer Service</a>'); }
   }
 
   function go(hash) { if (location.hash === hash) navigate(); else location.hash = hash; }
@@ -456,6 +471,7 @@
           <div><label>Password</label><input type="password" name="password" required minlength="6" autocomplete="new-password"></div>
           <div><label>Confirm password</label><input type="password" name="confirm" required autocomplete="new-password"></div>
         </div>
+        <p class="small muted">By registering, you agree to the <a href="#/terms">Terms and Conditions</a> and the <a href="#/privacy">Privacy Policy</a>.</p>
         <p><button class="btn" type="submit">Register</button></p>
       </form>
       <p class="small muted">Already registered? <a href="#/login">Log in</a>.</p></div>`);
@@ -469,7 +485,7 @@
       <p class="muted small">📍 ${esc(s.address || 'Naval, Biliran')} · <a href="${esc(mapOpenUrl(s))}" target="_blank" rel="noopener">View on Google Maps</a></p>
       ${s.phone ? `<p class="muted small">📞 ${esc(s.phone)}</p>` : ''}
       <p>${esc(s.description || 'Catering services in Naval, Biliran.')}</p>
-      <p class="small muted">${pk.length} package${pk.length === 1 ? '' : 's'}${min ? ` · from <b>${peso(min)}</b>/head` : ''}</p>
+      <p class="small muted">${pk.length} package${pk.length === 1 ? '' : 's'}${min ? ` · from <b>${peso(min)}</b>` : ''}</p>
       <a class="btn sm" href="#/business/${s.id}">View packages</a></div>`;
   }
 
@@ -477,7 +493,7 @@
     const s = sellerById(p.sellerId);
     return `<div class="card pkgcard"><a class="strip ph sp-${s.id}" href="#/business/${s.id}"><span class="bn">${esc(s.businessName)}</span></a>
       <h3>${esc(p.name)}</h3>
-      <div class="price">${peso(p.price)} <span class="muted small">/ head</span></div>
+      <div class="price">${peso(p.price)} <span class="muted small">${unitLabel(p)}</span></div>
       <p class="small muted">${p.minGuests}–${p.maxGuests} guests</p>
       ${p.description ? `<p>${esc(p.description)}</p>` : ''}
       <div class="tags">${lines(p.eventTypes).map(t => `<span class="tag">${esc(t)}</span>`).join('')}</div>
@@ -525,10 +541,12 @@
   });
 
   add(/^\/business\/(\d+)$/, ([id]) => {
-    const s = publicSellers().find(x => x.id === id);
+    const own = me() && me().role === 'seller' && mySeller() && mySeller().id === id; // the owner can preview a hidden shop
+    const s = publicSellers().find(x => x.id === id) || (own ? mySeller() : null);
     if (!s) return view(errorPage(404, 'This caterer is not available.'));
-    const pk = publicPackages().filter(p => p.sellerId === id).sort((a, b) => a.price - b.price);
-    view(`<section class="bizhero ph sp-${s.id}"><span class="eyebrow">Caterer in Naval, Biliran</span>
+    const previewOnly = own && !publicSellers().some(x => x.id === id);
+    const pk = (previewOnly ? db.packages.filter(p => p.sellerId === id && p.active && !p.removed) : publicPackages().filter(p => p.sellerId === id)).sort((a, b) => a.price - b.price);
+    view((previewOnly ? '<div class="notice"><b>Preview.</b> Customers cannot see this page until the administrator approves your account.</div>' : '') + `<section class="bizhero ph sp-${s.id}"><span class="eyebrow">Caterer in Naval, Biliran</span>
         <h1>${esc(s.businessName)}</h1><p>📍 ${esc(s.address || 'Naval, Biliran')}</p></section>
       <div class="locgrid">
         <div class="card">
@@ -571,7 +589,7 @@
         <div><label class="small">Caterer</label><select name="seller"><option value="">All</option>
           ${publicSellers().map(s => `<option value="${s.id}" ${f.seller === String(s.id) ? 'selected' : ''}>${esc(s.businessName)}</option>`).join('')}</select></div>
         <div><label class="small">Event type</label><input name="event_type" value="${esc(f.ev)}" placeholder="Wedding, Birthday…"></div>
-        <div><label class="small">Max price / head (₱)</label><input type="number" min="0" name="max_price" value="${esc(f.max)}"></div>
+        <div><label class="small">Max price (₱)</label><input type="number" min="0" name="max_price" value="${esc(f.max)}"></div>
         <div><label class="small">Guests</label><input type="number" min="1" name="guests" value="${esc(f.guests)}"></div>
         <div><label class="small">Sort by</label><select name="sort">${opt('price_asc', 'Price: low to high')}${opt('price_desc', 'Price: high to low')}${opt('capacity', 'Largest capacity')}${opt('name', 'Name')}</select></div>
         <div><button class="btn" type="submit">Apply</button></div>
@@ -586,14 +604,14 @@
     const pk = publicPackages().filter(p => ids.includes(p.id));
     if (pk.length < 2) { flash('Select at least two available packages to compare (up to four).', 'error'); return go('#/packages'); }
     const cheapest = Math.min(...pk.map(p => p.price));
-    const row = (label, fn) => `<tr><th>${label}</th>${pk.map(p => `<td class="${label === 'Price / head' && p.price === cheapest ? 'best' : ''}">${fn(p)}</td>`).join('')}</tr>`;
+    const row = (label, fn) => `<tr><th>${label}</th>${pk.map(p => `<td class="${label === 'Price' && p.price === cheapest ? 'best' : ''}">${fn(p)}</td>`).join('')}</tr>`;
     const ul = t => `<ul class="plain">${lines(t).map(x => `<li>${esc(x)}</li>`).join('')}</ul>`;
     view(`<h1>Compare packages</h1><div class="tablewrap"><table class="cmp">
       <tr><th></th>${pk.map(p => `<th class="ph sp-${p.sellerId} cmphead">${esc(p.name)}</th>`).join('')}</tr>
       ${row('Caterer', p => `<a href="#/business/${p.sellerId}">${esc(sellerById(p.sellerId).businessName)}</a>`)}
-      ${row('Price / head', p => peso(p.price) + (p.price === cheapest ? ' ✓ lowest' : ''))}
+      ${row('Price', p => peso(p.price) + ' <span class="muted small">' + unitLabel(p) + '</span>' + (p.price === cheapest ? ' ✓ lowest' : ''))}
       ${row('Capacity', p => `${p.minGuests}–${p.maxGuests} guests`)}
-      ${row('Sample cost (50 guests)', p => (p.minGuests <= 50 && 50 <= p.maxGuests) ? peso(p.price * 50) : '<span class="muted">n/a</span>')}
+      ${row('Sample cost (50 guests)', p => (p.minGuests <= 50 && 50 <= p.maxGuests) ? peso(totalFor(p, 50)) : '<span class="muted">n/a</span>')}
       ${row('Menu', p => ul(p.menu))}
       ${row('Inclusions', p => ul(p.inclusions))}
       ${row('Best for', p => esc(p.eventTypes || '—'))}
@@ -608,18 +626,18 @@
     if (!requireRole('customer')) return;
     const s = sellerById(p.sellerId);
     view(`<div class="card form-card wide"><h1>Reserve: ${esc(p.name)}</h1>
-      <p class="muted">${esc(s.businessName)} · ${peso(p.price)} per head · ${p.minGuests}–${p.maxGuests} guests</p>
+      <p class="muted">${esc(s.businessName)} · ${peso(p.price)} ${flatPrice(p) ? 'per package' : 'per head'} · ${p.minGuests}–${p.maxGuests} guests</p>
       <p class="small muted">📍 ${esc(s.address || 'Naval, Biliran')} · <a href="${esc(mapOpenUrl(s))}" target="_blank" rel="noopener">View on Google Maps</a></p>
       <form class="stack" data-form="reserve" data-id="${p.id}">
         <div class="row">
           <div><label>Event date</label><input type="date" name="date" min="${todayStr()}" required></div>
-          <div><label>Number of guests</label><input type="number" id="guests" name="guests" min="${p.minGuests}" max="${p.maxGuests}" value="${p.minGuests}" required data-price="${p.price}"></div>
+          <div><label>Number of guests</label><input type="number" id="guests" name="guests" min="${p.minGuests}" max="${p.maxGuests}" value="${p.minGuests}" required data-price="${p.price}" data-flat="${flatPrice(p) ? 1 : 0}"></div>
         </div>
         <label>Event type</label><input name="eventType" list="evtypes" required placeholder="e.g. Birthday">
         <datalist id="evtypes">${lines(p.eventTypes).map(t => `<option value="${esc(t)}">`).join('')}</datalist>
         <label>Event location</label><input name="location" required placeholder="Venue / address in Biliran">
         <label>Special requests (optional)</label><textarea name="notes"></textarea>
-        <p class="notice">Estimated total: <b id="total">${peso(p.price * p.minGuests)}</b>. The caterer must approve your request before it is confirmed.</p>
+        <p class="notice">Estimated total: <b id="total">${peso(totalFor(p, p.minGuests))}</b>. The caterer must approve your request before it is confirmed.</p>
         <p><button class="btn" type="submit">Submit reservation request</button> <a class="btn alt" href="#/packages">Back</a></p>
       </form></div>`);
   });
@@ -636,7 +654,7 @@
           <td>${fdate(r.date)}<br><span class="muted small">${esc(r.eventType)} · ${esc(r.location)}</span></td>
           <td>${r.guests}</td><td>${peso(r.total)}</td>
           <td>${badge(r.status)}${r.sellerNote ? `<br><span class="small muted">Note: ${esc(r.sellerNote)}</span>` : ''}</td>
-          <td>${r.status !== 'approved' ? '<span class="muted small">—</span>' : `${payBadge(r)}<br><span class="small muted">Due: ${peso(dueOf(r, s))}</span><br>`
+          <td>${r.status !== 'approved' ? '<span class="muted small">—</span>' : `${payBadge(r)}<br><span class="small muted">Due: ${peso(dueOf(r, s))}</span>${payByNote(r)}<br>`
             + (r.payStatus === 'received' ? `<a class="btn sm" href="#/receipt/${r.id}">View receipt</a>` : `<a class="btn sm" href="#/pay/${r.id}">${r.payStatus === 'submitted' ? 'View payment' : 'Pay now'}</a>`)}</td>
           <td>${['pending', 'approved'].includes(r.status) && r.payStatus !== 'received' ? `<button class="btn warn sm" data-act="cancel" data-id="${r.id}">Cancel</button>` : ''}</td></tr>`;
       }).join('')}</table></div>` : `<p class="muted">You have no reservations yet.</p><a class="btn" href="#/packages">Browse packages</a>`));
@@ -661,6 +679,9 @@
         <tr><td>Balance after down payment</td><td>${peso(r.total - due)}</td></tr></table>
       ${qr}
       ${s.payNote ? `<p><b>Payment details:</b><br>${esc(s.payNote).replace(/\n/g, '<br>')}</p>` : ''}
+      ${r.payStatus === 'unpaid' && r.payBy ? (new Date(r.payBy) - Date.now() > 0
+        ? `<div class="notice">Please pay before <b>${esc(fdatetime(r.payBy))}</b> (Philippine time). If the down payment is not paid by then, the reservation is cancelled automatically and the date is opened again.</div>`
+        : `<div class="flash error">The payment deadline (${esc(fdatetime(r.payBy))}) has passed. This reservation may be cancelled at any moment.</div>`) : ''}
       ${r.payNote ? `<div class="flash error">Caterer's note: ${esc(r.payNote)}</div>` : ''}
       ${r.payStatus === 'submitted' ? `<div class="notice">Your proof was sent. The caterer will confirm it, and your receipt will appear in your notifications.</div>${proof}` : ''}
       <p class="small muted">By paying, you agree to the <a href="#/policy/cancellation">Cancellation and Refund Policy</a>.</p>
@@ -720,7 +741,7 @@
       <h2>1. Cancellation</h2>
       <ul>
         <li><b>Before the caterer accepts your request:</b> you can cancel anytime in <b>My Reservations</b>, free of charge. No payment has been made yet.</li>
-        <li><b>After the caterer accepts, but before the down payment is confirmed:</b> you can still cancel in <b>My Reservations</b> without any fee.</li>
+        <li><b>After the caterer accepts, but before the down payment is confirmed:</b> you can still cancel in <b>My Reservations</b> without any fee. The down payment must be paid before the deadline shown on the payment page (6 to 48 hours, usually 24 hours). If it is not paid in time, the reservation is <b>cancelled automatically</b>.</li>
         <li><b>After the down payment is confirmed:</b> the booking can no longer be cancelled online. Please contact the caterer as early as possible. Whether the down payment is returned depends on the caterer's terms and on how early you cancel.</li>
         <li><b>On or after the event date:</b> a service that was already provided cannot be cancelled.</li>
         <li><b>How to cancel:</b> press <b>Cancel</b> in My Reservations, or send a message through <a href="#/help">Customer Service</a> with your <b>reservation number</b>.</li>
@@ -753,6 +774,127 @@
       <p><a class="btn alt" href="#/help">Back to Customer Service</a></p></div>`);
   });
 
+  /* ---------- Terms and Conditions (public) ---------- */
+  add(/^\/terms$/, () => {
+    view(`<div class="card form-card wide" style="line-height:1.6"><h1>Terms and Conditions</h1>
+      <p class="muted">Last updated: October 28, 2026. By creating an account or using the Naval Catering Marketplace, you agree to these terms. Please read them carefully.</p>
+
+      <h2>1. What this website is</h2>
+      <p>The Naval Catering Marketplace is a website that helps customers in Naval, Biliran compare local caterers and reserve their catering packages. The catering service itself is provided by the caterer (the seller), not by the website. The website does not cook, deliver or serve food.</p>
+
+      <h2>2. Accounts</h2>
+      <ul>
+        <li>You must give true and complete information when you register, and keep it up to date.</li>
+        <li>You are responsible for your password and for everything done under your account. Do not share your password.</li>
+        <li>You must be at least 18 years old, or use the website with the permission and supervision of a parent or guardian.</li>
+        <li>Seller accounts are reviewed by an administrator. An account can be approved, declined, suspended or banned.</li>
+      </ul>
+
+      <h2>3. For customers</h2>
+      <ul>
+        <li>Give correct event details (date, place, number of guests) so the caterer can plan properly.</li>
+        <li>A reservation is only a request until the caterer accepts it. It is confirmed once the caterer confirms your down payment.</li>
+        <li>After the caterer accepts, you must pay the down payment before the deadline (6 to 48 hours, usually 24 hours, as shown on the payment page). If it is not paid in time, the reservation is cancelled automatically and the date is opened again.</li>
+        <li>Pay the down payment to the caterer's QR code or account shown on the payment page, and upload a real screenshot or photo of your payment.</li>
+        <li>The balance is paid directly to the caterer, as agreed with them.</li>
+      </ul>
+
+      <h2>4. For sellers (caterers)</h2>
+      <ul>
+        <li>Your business name, address, photos, packages, prices and inclusions must be true. Do not use photos or content that belong to someone else without permission.</li>
+        <li>Your payment QR code and account details must be your own. Check each payment proof carefully before you confirm it.</li>
+        <li>Honor the reservations you accept and the down payments you confirm. Contact the customer early if something changes.</li>
+        <li>Refunds follow the <a href="#/policy/cancellation">Cancellation and Refund Policy</a>.</li>
+      </ul>
+
+      <h2>5. Payments and receipts</h2>
+      <ul>
+        <li>Payments are made directly to the caterer. The website does not hold your money.</li>
+        <li>The receipt shown on the website is an acknowledgment that the caterer confirmed your down payment. It is not an official BIR receipt.</li>
+        <li>Cancellations and refunds are covered by the <a href="#/policy/cancellation">Cancellation and Refund Policy</a>.</li>
+      </ul>
+
+      <h2>6. What you must not do</h2>
+      <ul>
+        <li>Send fake reservations, fake payment screenshots or false information.</li>
+        <li>Harass, threaten or insult other users, or post illegal or offensive content.</li>
+        <li>Try to break into the website, use other people's accounts, or damage the service.</li>
+        <li>Use the website for anything other than booking or offering catering services.</li>
+      </ul>
+      <p>We may remove content, suspend or ban an account that breaks these rules.</p>
+
+      <h2>7. Our responsibility</h2>
+      <ul>
+        <li>We try to keep the website working and accurate, but we cannot promise that it will always be available or free of errors.</li>
+        <li>The caterer is responsible for the food, the service and the events it provides. The marketplace helps customers and caterers reach a fair agreement through <a href="#/help">Customer Service</a>, but is not responsible for the caterer's service.</li>
+      </ul>
+
+      <h2>8. Your data</h2>
+      <p>How we collect and use your information is explained in the <a href="#/privacy">Privacy Policy</a>.</p>
+
+      <h2>9. Changes</h2>
+      <p>We may update these terms. The date at the top shows the latest version. If you keep using the website after a change, you accept the new terms.</p>
+
+      <h2>10. Contact</h2>
+      <p>Questions? Open <a href="#/help">Customer Service</a>${SUPPORT.email ? ` or email <a href="mailto:${esc(SUPPORT.email)}">${esc(SUPPORT.email)}</a>` : ''}.</p>
+      <p><a class="btn alt" href="#/help">Back to Customer Service</a></p></div>`);
+  });
+
+  /* ---------- Privacy Policy (public) ---------- */
+  add(/^\/privacy$/, () => {
+    view(`<div class="card form-card wide" style="line-height:1.6"><h1>Privacy Policy</h1>
+      <p class="muted">Last updated: October 28, 2026. This policy explains what personal information the Naval Catering Marketplace collects, why, and what you can do about it. We follow the principles of the Philippine Data Privacy Act of 2012 (Republic Act No. 10173).</p>
+
+      <h2>1. What we collect</h2>
+      <ul>
+        <li><b>Account details:</b> your full name, username, email address, mobile number and password. The password is handled by our login system and is not shown to us or to other users.</li>
+        <li><b>For sellers:</b> business name, address, landmark, photos, packages and prices, and the payment QR code and account details you choose to upload.</li>
+        <li><b>Reservations:</b> event date, place, number of guests, the package you chose and any notes you write.</li>
+        <li><b>Payments:</b> the screenshot or photo of your payment and the reference number you enter.</li>
+        <li><b>Messages:</b> concerns you send through Customer Service, and the replies.</li>
+      </ul>
+
+      <h2>2. Why we collect it</h2>
+      <ul>
+        <li>To create and protect your account, and to log you in.</li>
+        <li>To process reservations, down payments and receipts between customers and caterers.</li>
+        <li>To send you notifications about your reservations and concerns.</li>
+        <li>To answer your concerns, prevent fraud and keep the website safe.</li>
+      </ul>
+
+      <h2>3. Who can see your information</h2>
+      <ul>
+        <li><b>The caterer you reserve with</b> can see your name, contact details, event details and payment proof for that reservation.</li>
+        <li><b>Customers</b> can see a caterer's public business information: business name, address, photos, packages and prices.</li>
+        <li><b>Administrators</b> can see account and reservation records so they can manage the website and answer concerns.</li>
+        <li>We do not sell your personal information.</li>
+      </ul>
+
+      <h2>4. Where it is kept</h2>
+      <ul>
+        <li>Your data is stored with our service providers: <b>Supabase</b> (database, login and file storage) and <b>Vercel</b> (website hosting). Their servers may be outside the Philippines.</li>
+        <li>Uploaded images, such as payment screenshots and QR codes, are stored in a file storage area. The links are not listed publicly, but anyone who has the exact link can open the image, so please do not share your screenshot links.</li>
+        <li>Please do not upload screenshots that show more than needed (for example, other bank details or conversations).</li>
+        <li>This website uses your browser only to keep you logged in. It does not use advertising cookies.</li>
+      </ul>
+
+      <h2>5. How long we keep it</h2>
+      <p>We keep your information while your account is active and as long as needed for reservations, receipts, refunds and dispute handling. When it is no longer needed, we delete it or make it anonymous.</p>
+
+      <h2>6. Your rights</h2>
+      <p>You may ask to see the information we hold about you, correct mistakes, or ask us to delete your account and information (some records may be kept when needed for an open reservation, refund or legal reason). You may also object to how your information is used. Send your request through <a href="#/help">Customer Service</a>.</p>
+
+      <h2>7. Security</h2>
+      <p>We use access rules so that each user only sees what they are allowed to see. No website is completely secure, so keep your password private and log out on shared devices.</p>
+
+      <h2>8. Changes</h2>
+      <p>We may update this policy. The date at the top shows the latest version.</p>
+
+      <h2>9. Contact</h2>
+      <p>Questions about your privacy? Open <a href="#/help">Customer Service</a>${SUPPORT.email ? ` or email <a href="mailto:${esc(SUPPORT.email)}">${esc(SUPPORT.email)}</a>` : ''}.</p>
+      <p><a class="btn alt" href="#/help">Back to Customer Service</a></p></div>`);
+  });
+
   /* ---------- Customer Service (public page; sending a message needs a login) ---------- */
   add(/^\/help$/, () => {
     const u = me();
@@ -761,6 +903,7 @@
       ['How do I make a reservation?', 'Create a customer account, open <b>Packages</b> or a caterer\'s page, choose a package and press <b>Select &amp; reserve</b>. Enter the event date, number of guests, event type and location. The caterer reviews your request and accepts or declines it.'],
       ['Can I compare packages from different caterers?', 'Yes. In <b>Packages</b>, tick up to four packages and press <b>Compare</b> to see their prices, menus and inclusions side by side.'],
       ['What payment methods are accepted?', 'After the caterer accepts your request, you pay a <b>down payment</b> by scanning the caterer\'s QR code (GCash, Maya or bank). Then upload a screenshot of your payment. When the caterer confirms it, you receive your receipt automatically. The balance is paid directly to the caterer.'],
+      ['How long do I have to pay the down payment?', 'The caterer gives you <b>6 to 48 hours</b> (usually 24 hours) after accepting your request. The exact time is shown on the payment page and in your notification. If it is not paid in time, the reservation is cancelled automatically and the date is opened again. If you already sent your proof, it is not cancelled while the caterer checks it.'],
       ['How can I change or cancel my reservation?', 'Open <b>My Reservations</b> and press <b>Cancel</b> while the request is pending or approved and the down payment is not yet confirmed. After the down payment is received, please contact the caterer to change or cancel the booking. See the <a href="#/policy/cancellation">Cancellation and Refund Policy</a>.'],
       ['How do I create an account?', 'Press <b>Register</b>, choose <b>Customer</b> and fill in your details. Caterers choose <b>Seller</b>; a seller account must be approved by the administrator before it can log in.'],
       ['Where do I find my receipt?', 'Go to <b>Notifications</b> and press <b>View receipt</b>, or open <b>My Reservations</b>. On the receipt you can press <b>Print / Save as PDF</b>.'],
@@ -843,6 +986,7 @@
     const revenue = mine.filter(r => r.status === 'approved').reduce((t, r) => t + r.total, 0);
     const toConfirm = mine.filter(r => r.status === 'approved' && r.payStatus === 'submitted').length;
     view(`<section class="bizhero ph sp-${s.id}"><span class="eyebrow">My business</span><h1>${esc(s.businessName)}</h1><p>Seller dashboard — you can only see and manage your own business records.</p></section>
+      ${isPendingSeller(me()) ? '<div class="notice"><b>Waiting for administrator approval.</b> Your shop is not visible to customers yet and cannot receive reservations. Complete your <a href="#/seller/profile">business profile</a> and <a href="#/seller/packages">packages</a> now. <a href="#/business/' + s.id + '">Preview your shop page</a>.</div>' : ''}
       ${!imgOk(s.qrImage) ? '<div class="notice">Customers pay their down payment by scanning your QR code. <a href="#/seller/profile">Upload your GCash / bank QR code</a> in your business profile.</div>' : ''}
       ${toConfirm ? `<div class="notice"><b>${toConfirm}</b> payment proof${toConfirm > 1 ? 's are' : ' is'} waiting for you. <a href="#/seller/reservations?status=approved">Review and confirm</a>.</div>` : ''}
       <div class="stats">
@@ -867,12 +1011,13 @@
     const s = mySeller();
     const pk = db.packages.filter(p => p.sellerId === s.id && !p.removed).sort((a, b) => a.id - b.id); // own packages only
     view(`<h1>Prices and inclusions</h1>
-      <p class="muted">Set the price per head, the guest capacity and what is included in each of your packages.</p>
+      <p class="muted">Set the price, the guest capacity and what is included in each of your packages.</p>
       <p><a class="btn alt sm" href="#/seller">← Back to dashboard</a> <a class="btn alt sm" href="#/seller/packages">Manage packages</a></p>` +
       (pk.length ? pk.map(p => `<div class="card" style="margin-bottom:14px"><h3>${esc(p.name)} ${p.active ? '' : '<span class="badge cancelled">Hidden</span>'}</h3>
         <form class="stack" data-form="prices" data-id="${p.id}">
           <div class="row">
-            <div><label>Price per head (₱)</label><input type="number" name="price" min="1" step="0.01" value="${esc(p.price)}" required></div>
+            <div><label>Price (₱)</label><input type="number" name="price" min="1" step="0.01" value="${esc(p.price)}" required></div>
+            <div><label>Price type</label><select name="priceType"><option value="head" ${!flatPrice(p) ? 'selected' : ''}>Per head</option><option value="package" ${flatPrice(p) ? 'selected' : ''}>One price for the package</option></select></div>
             <div><label>Minimum guests</label><input type="number" name="minGuests" min="1" value="${p.minGuests}" required></div>
             <div><label>Maximum guests</label><input type="number" name="maxGuests" min="1" value="${p.maxGuests}" required></div>
           </div>
@@ -914,6 +1059,9 @@
       <label>Down payment (% of the total)</label>
       <input type="number" name="downPct" min="10" max="100" step="1" value="${s.downPct}" required>
       <p class="small muted">Applies to reservations you accept from now on.</p>
+      <label>Time the customer has to pay the down payment</label>
+      <select name="payWindow">${[6, 12, 24, 48].map(h => `<option value="${h}" ${s.payWindow === h ? 'selected' : ''}>${h} hours after you accept</option>`).join('')}</select>
+      <p class="small muted">If it is not paid in time, the reservation is cancelled automatically and the date opens again. When the event is less than 48 hours away, the time is shortened (at most 6 hours).</p>
       <label>Maximum events you can handle per day</label>
       <input type="number" name="maxPerDay" min="1" max="20" value="${s.maxPerDay}" required>
       <p class="small muted">Once this many events are approved on a date, new requests for that date are blocked.</p>
@@ -929,12 +1077,85 @@
       <h2>Published references</h2>${refs.length ? `<div class="reference-grid">${refs.map(r => `<figure class="reference-card"><img src="${esc(r.image)}" alt="${esc(r.title)}"><figcaption><b>${esc(r.title)}</b><span>${esc(r.category)}</span><button class="btn warn sm" data-act="delete-reference" data-id="${r.id}">Remove</button></figcaption></figure>`).join('')}</div>` : '<p class="muted">No category references uploaded yet.</p>'}`);
   });
 
+  /* ---------- Paste-your-menu reader (no AI, runs in the browser) ---------- */
+  // Reads a menu written as plain text and makes DRAFT packages. A line that ends with a price starts a new package;
+  // the lines under it are its dishes; lines that start with "free" are inclusions. The seller always reviews the drafts.
+  function parseMenuText(raw) {
+    const EMOJI = /[\u{1F000}-\u{1FFFF}\u{2190}-\u{2BFF}\u{FE00}-\u{FE0F}\u{200D}\u{203C}\u{2049}]/gu;
+    const clean = l => l.replace(EMOJI, ' ').replace(/^[\s*•·▪◦■□●○\-–—>]+/, '').replace(/\s+/g, ' ').trim();
+    const PRICE = /^(.*?[A-Za-z].*?)[\s:=\-–—]*(?:₱|php|p)?\s*\.?\s*(\d{1,3}(?:,\d{3})+|\d{3,7})(?:\.\d{1,2})?\s*(per\s*head|\/\s*head|per\s*pax|\/\s*pax|each|per\s*person)?\s*[.!]*$/i;
+    const titleCase = t => t.toLowerCase().replace(/(^|\s)([a-z])/g, (m, a, b) => a + b.toUpperCase());
+    const out = []; let cur = null, section = '', stop = false; const seen = {};
+    const lines = String(raw || '').split(/\r?\n/).slice(0, 600);
+    const finish = () => { if (cur) { out.push(cur); cur = null; } };
+    for (const original of lines) {
+      const line = clean(original);
+      if (!line) continue;
+      const m = line.length <= 90 && !/^(as of|updated|note|price list)/i.test(line) ? line.match(PRICE) : null;
+      const priceNum = m ? Number(m[2].replace(/,/g, '')) : 0;
+      if (m && priceNum >= 100 && !/^free\b/i.test(line)) {
+        finish(); stop = false;
+        let name = m[1].replace(/[\s:=\-–—]+$/, '').replace(/\b(php|p)$/i, '').replace(/[\s:=\-–—]+$/, '').trim();
+        if (!name) name = 'Package';
+        if (section && (seen[name.toLowerCase()] || /^package\b/i.test(name))) name = name + ' (' + section + ')';
+        seen[name.toLowerCase()] = (seen[name.toLowerCase()] || 0) + 1;
+        const head = !!m[3];
+        cur = { name: name.slice(0, 80), price: priceNum, priceType: head ? 'head' : (priceNum >= 1000 ? 'package' : 'head'), menu: [], inclusions: [] };
+        continue;
+      }
+      // headings and notes end the current package
+      const isNote = /^(note|delivery|we accept|we can|\*|please|as of|updated)/i.test(line) || /^[☑✔❤‼]/.test(original.trim()) || original.trim().startsWith('*');
+      const looksHeading = !/\d/.test(line) && line.split(' ').length <= 7 && /(package|menu|tray|packages)\b/i.test(line) && (line === line.toUpperCase() || /^[❤✔‼☑]/u.test(original.trim()) || /\u{2764}|\u{2714}|\u{203C}/u.test(original));
+      if (looksHeading) { finish(); stop = true; section = titleCase(line).replace(/\s*\bPackages?\b\s*/g, ' ').replace(/\(\s+/g, '(').replace(/\s+\)/g, ')').replace(/\s+/g, ' ').trim(); continue; }
+      if (isNote) { finish(); stop = true; continue; }
+      if (!cur || stop) continue;
+      if (/^free\b/i.test(line)) cur.inclusions.push(line.replace(/^free\s*/i, 'Free ').replace(/\s*&\s*/g, ' and '));
+      else cur.menu.push(line);
+    }
+    finish();
+    return out.filter(p => p.menu.length || p.inclusions.length || p.price).slice(0, 60).map(p => Object.assign(p, { menu: p.menu.join('\n'), inclusions: p.inclusions.join('\n') }));
+  }
+
+  let importDraft = null; // { text, items } while a seller is reviewing pasted menu drafts
+  add(/^\/seller\/import$/, () => {
+    if (!requireRole('seller')) return;
+    const dr = importDraft;
+    const items = dr ? dr.items : [];
+    view(`<h1>Paste your menu</h1>
+      <p class="muted">Copy your menu or price list (from Facebook, Messenger or Notes), paste it here and the system will make draft packages. You check and fix them before saving.</p>
+      <p><a class="btn alt sm" href="#/seller/packages">← Back to packages</a> <a class="btn alt sm" href="#/seller/package/new">Add one package manually</a></p>
+      <div class="card" style="margin-bottom:16px"><h3>How to write the menu so it can be read</h3>
+        <ol class="small">
+          <li>Write the <b>package name and price on one line</b>, for example <code>Lechon Package A - 11,499</code> or <code>Fiesta Buffet - ₱350 per head</code>.</li>
+          <li>Under it, write <b>one dish per line</b>.</li>
+          <li>Start a line with <b>Free</b> for free inclusions, for example <code>Free puto</code>.</li>
+          <li>Leave a blank line between packages.</li>
+          <li>Press <b>Read my menu</b>, check every price and dish, then press <b>Save packages</b>.</li>
+        </ol>
+        <p class="small muted">Tip: a price with no "per head" is saved as <b>one price for the whole package</b>. You can change this for each draft. The system makes drafts only; nothing is saved until you press Save.</p>
+      </div>
+      <form class="stack" data-form="import-read"><label>Your menu text</label>
+        <textarea name="text" rows="12" required placeholder="Lechon Package A - 11,499&#10;1 whole lechon 18-20 kg&#10;1 choice of beef or pork&#10;Free puto">${esc(dr ? dr.text : '')}</textarea>
+        <p><button class="btn" type="submit">Read my menu</button></p></form>`
+      + (dr && !items.length ? '<div class="notice">No packages were found. Make sure each package has a name and a price on one line.</div>' : '')
+      + (items.length ? `<h2>Check ${items.length} draft package${items.length === 1 ? '' : 's'}</h2>
+        <form class="stack" data-form="import-save">
+        ${items.map((p, i) => `<div class="card" style="margin-bottom:12px"><label class="chk"><input type="checkbox" name="use_${i}" value="1" checked> Save this package</label>
+          <div class="row"><div><label>Package name</label><input name="name_${i}" value="${esc(p.name)}" maxlength="80"></div>
+          <div><label>Price (₱)</label><input type="number" name="price_${i}" min="1" step="0.01" value="${esc(p.price)}"></div>
+          <div><label>Price type</label><select name="ptype_${i}"><option value="head" ${p.priceType === 'head' ? 'selected' : ''}>Per head</option><option value="package" ${p.priceType === 'package' ? 'selected' : ''}>One price for the package</option></select></div></div>
+          <div class="row"><div><label>Minimum guests</label><input type="number" name="min_${i}" min="1" value="10"></div><div><label>Maximum guests</label><input type="number" name="max_${i}" min="1" value="200"></div></div>
+          <label>Menu (one dish per line)</label><textarea name="menu_${i}">${esc(p.menu)}</textarea>
+          <label>Inclusions</label><textarea name="incl_${i}">${esc(p.inclusions)}</textarea></div>`).join('')}
+        <p><button class="btn" type="submit">Save packages</button> <a class="btn alt" href="#/seller/packages">Cancel</a></p></form>` : ''));
+  });
+
   add(/^\/seller\/packages$/, () => {
     if (!requireRole('seller')) return;
     const s = mySeller();
     const pk = db.packages.filter(p => p.sellerId === s.id).sort((a, b) => b.id - a.id);
-    view(`<h1>My catering packages</h1><p><a class="btn" href="#/seller/package/new">+ Add package</a></p>` + (pk.length ? `<div class="tablewrap"><table>
-      <tr><th>Package</th><th>Price / head</th><th>Capacity</th><th>Status</th><th></th></tr>
+    view(`<h1>My catering packages</h1><p><a class="btn" href="#/seller/package/new">+ Add package</a> <a class="btn alt" href="#/seller/import">Paste your menu</a></p>` + (pk.length ? `<div class="tablewrap"><table>
+      <tr><th>Package</th><th>Price</th><th>Capacity</th><th>Status</th><th></th></tr>
       ${pk.map(p => `<tr><td><b>${esc(p.name)}</b><br><span class="muted small">${esc(p.eventTypes)}</span></td>
         <td>${peso(p.price)}</td><td>${p.minGuests}–${p.maxGuests}</td>
         <td>${p.removed ? '<span class="badge rejected">Removed by admin</span>' : p.active ? '<span class="badge active">Visible</span>' : '<span class="badge cancelled">Hidden</span>'}</td>
@@ -950,7 +1171,8 @@
       <label>Package name</label><input name="name" value="${esc(p.name)}" required>
       <label>Short description</label><input name="description" value="${esc(p.description)}">
       <div class="row">
-        <div><label>Price per head (₱)</label><input type="number" name="price" min="1" step="0.01" value="${esc(p.price)}" required></div>
+        <div><label>Price (₱)</label><input type="number" name="price" min="1" step="0.01" value="${esc(p.price)}" required></div>
+            <div><label>Price type</label><select name="priceType"><option value="head" ${!flatPrice(p) ? 'selected' : ''}>Per head</option><option value="package" ${flatPrice(p) ? 'selected' : ''}>One price for the package</option></select></div>
         <div><label>Minimum guests</label><input type="number" name="minGuests" min="1" value="${p.minGuests || 10}" required></div>
         <div><label>Maximum guests</label><input type="number" name="maxGuests" min="1" value="${p.maxGuests || 200}" required></div>
       </div>
@@ -989,7 +1211,7 @@
             ${r.status === 'pending' ? `<br><span class="small ${full ? '' : 'muted'}" ${full ? 'style="color:var(--danger);font-weight:600"' : ''}>Date availability: ${booked}/${s.maxPerDay} booked</span>` : ''}</td>
           <td>${peso(r.total)}</td>
           <td>${badge(r.status)}${r.sellerNote ? `<br><span class="small muted">${esc(r.sellerNote)}</span>` : ''}</td>
-          <td>${r.status !== 'approved' ? '<span class="muted small">—</span>' : `${payBadge(r)}<br><span class="small muted">Due: ${peso(dueOf(r, s))}</span>`
+          <td>${r.status !== 'approved' ? '<span class="muted small">—</span>' : `${payBadge(r)}<br><span class="small muted">Due: ${peso(dueOf(r, s))}</span>${payByNote(r)}`
             + (r.payStatus === 'received' ? `<br><span class="small muted">${esc(r.receiptNo)}</span><br><a class="btn alt sm" href="#/receipt/${r.id}">View receipt</a>` : '')
             + (r.payStatus === 'submitted' ? `<br>${imgOk(r.proof) ? `<a href="${esc(r.proof)}" target="_blank" rel="noopener"><img class="proofthumb" src="${esc(r.proof)}" alt="Payment proof"></a>` : ''}${r.payRef ? `<span class="small">Ref: ${esc(r.payRef)}</span><br>` : ''}` : '')
             + (r.payStatus !== 'received' ? `<br><button class="btn sm" data-act="confirm-payment" data-id="${r.id}">Confirm payment received</button>` + (r.payStatus === 'submitted' ? ` <button class="btn warn sm" data-act="reject-payment" data-id="${r.id}">Not valid</button>` : '') : '')}</td>
@@ -1071,7 +1293,7 @@
     if (!requireRole('admin')) return;
     view(`<h1>Catering listings</h1>${adminNav('listings')}
       <p class="small muted">Remove inappropriate listings. Removed packages are hidden from customers and cannot be re-enabled by the seller.</p>
-      <div class="tablewrap"><table><tr><th>Business</th><th>Package</th><th>Price / head</th><th>Status</th><th></th></tr>
+      <div class="tablewrap"><table><tr><th>Business</th><th>Package</th><th>Price</th><th>Status</th><th></th></tr>
       ${db.packages.map(p => `<tr><td>${esc(sellerById(p.sellerId).businessName)}</td>
         <td><b>${esc(p.name)}</b><br><span class="muted small">${esc(p.description)}</span>
           <details><summary class="small">Review content</summary>
@@ -1144,7 +1366,6 @@
       let problem = '', type = 'error';
       if (!user) problem = 'Your account could not be loaded. Please contact the administrator.';
       else if (d.role && user.role !== d.role) problem = 'That account does not match the selected account type.';
-      else if (user.status === 'pending') { problem = 'Your seller account is still waiting for administrator approval.'; type = 'info'; }
       else if (user.status === 'rejected') problem = 'Your seller registration was not approved. Please contact the administrator.';
       else if (user.status === 'deactivated') problem = 'This account has been deactivated. Please contact the administrator.';
       if (problem) {
@@ -1152,7 +1373,7 @@
         flash(problem, type); return route();
       }
       logAct('Logged in');
-      flash('Welcome, ' + user.fullName + '!', 'success');
+      flash('Welcome, ' + user.fullName + '!' + (isPendingSeller(user) ? ' Your shop is waiting for administrator approval. You can set up your profile and packages now.' : ''), 'success');
       go(homeFor(user));
     },
 
@@ -1181,7 +1402,7 @@
       const needsEmailConfirm = !data.session;
       if (data.session) { await sb.auth.signOut(); session = null; } // the person logs in on the next screen
       const confirmNote = needsEmailConfirm ? ' Please also confirm your email address (check your inbox).' : '';
-      if (d.role === 'seller') flash('Registration received. An administrator must approve your seller account before you can log in.' + confirmNote, 'success');
+      if (d.role === 'seller') flash('Registration received. An administrator must approve your seller account before your shop is shown to customers. You can log in now to set up your profile and packages.' + confirmNote, 'success');
       else flash('Account created.' + (needsEmailConfirm ? confirmNote.trim() : ' You can now log in.'), 'success');
       go('#/login');
     },
@@ -1276,6 +1497,8 @@
       if (d.photo && !(DATA_PHOTO_RE.test(d.photo) && d.photo.length < 700000)) { flash('That picture could not be used. Try a smaller JPG or PNG.', 'error'); return route(); }
       const downPct = parseInt(d.downPct, 10);
       if (!(downPct >= 10 && downPct <= 100)) { flash('The down payment must be between 10% and 100%.', 'error'); return route(); }
+      const payWindow = parseInt(d.payWindow, 10);
+      if (![6, 12, 24, 48].includes(payWindow)) { flash('Choose 6, 12, 24 or 48 hours for the payment deadline.', 'error'); return route(); }
       if (d.qr && !(DATA_PHOTO_RE.test(d.qr) && d.qr.length < 700000)) { flash('That QR code picture could not be used. Try a smaller JPG or PNG.', 'error'); return route(); }
       const oldQr = s.qrImage;
       let qrImage = oldQr;
@@ -1285,7 +1508,7 @@
       let photo = oldPhoto;
       if (d.removePhoto) photo = '';
       else if (d.photo) photo = await uploadImage(d.photo, 'store');
-      await change(sb.from('sellers').update({ business_name: d.businessName.trim(), description: d.description.trim(), address: d.address.trim(), landmark: (d.landmark || '').trim(), phone: d.phone.trim(), email, map_link: map, photo, max_per_day: cap, qr_image: qrImage, down_payment_pct: downPct, payment_note: (d.payNote || '').trim().slice(0, 300) }).eq('id', s.id));
+      await change(sb.from('sellers').update({ business_name: d.businessName.trim(), description: d.description.trim(), address: d.address.trim(), landmark: (d.landmark || '').trim(), phone: d.phone.trim(), email, map_link: map, photo, max_per_day: cap, qr_image: qrImage, down_payment_pct: downPct, pay_window_hours: payWindow, payment_note: (d.payNote || '').trim().slice(0, 300) }).eq('id', s.id));
       if (oldPhoto && oldPhoto !== photo) removeImage(oldPhoto);
       if (oldQr && oldQr !== qrImage) removeImage(oldQr);
       logAct('Updated the business profile');
@@ -1297,10 +1520,12 @@
       const s = mySeller(), id = Number(form.dataset.id) || 0;
       const price = parseFloat(d.price), mn = parseInt(d.minGuests, 10), mx = parseInt(d.maxGuests, 10), errors = [];
       if (!d.name.trim()) errors.push('Package name is required.');
-      if (!(price > 0)) errors.push('Enter a price per head greater than zero.');
+      if (!(price > 0)) errors.push('Enter a price greater than zero.');
       if (!(mn >= 1 && mx >= mn)) errors.push('Guest capacity is invalid (minimum must be at least 1 and not above the maximum).');
       if (errors.length) { errors.forEach(e => flash(e, 'error')); return route(); }
       const row = { name: d.name.trim(), description: d.description.trim(), menu: d.menu.trim(), inclusions: d.inclusions.trim(), event_types: d.eventTypes.trim(), price, min_guests: mn, max_guests: mx };
+      if (db.hasPriceType !== false) row.price_type = d.priceType === 'package' ? 'package' : 'head';
+      else if (d.priceType === 'package') { flash('Price type needs the database update (6-pending-sellers.sql) first.', 'error'); return route(); }
       if (id) {
         const p = db.packages.find(x => x.id === id && x.sellerId === s.id && !x.removed);
         if (!p) { flash('Package not found.', 'error'); return go('#/seller/packages'); }
@@ -1310,6 +1535,41 @@
         await change(sb.from('packages').insert(Object.assign({ seller_id: s.id, active: true, removed: false }, row)));
         flash('Package added.', 'success'); logAct('Added package "' + row.name + '"');
       }
+      go('#/seller/packages');
+    },
+
+
+    // Seller: read a pasted menu and keep the drafts for review (nothing is saved yet)
+    async 'import-read'(d) {
+      if (!requireRole('seller')) return;
+      const text = String(d.text || '').slice(0, 30000);
+      importDraft = { text, items: parseMenuText(text) };
+      return route();
+    },
+
+    // Seller: save the reviewed drafts as real packages
+    async 'import-save'(d) {
+      if (!requireRole('seller')) return;
+      const s = mySeller(), n = importDraft ? importDraft.items.length : 0, rows = [], errors = [];
+      for (let i = 0; i < n; i++) {
+        if (!d['use_' + i]) continue;
+        const name = String(d['name_' + i] || '').trim().slice(0, 80), price = parseFloat(d['price_' + i]);
+        const mn = parseInt(d['min_' + i], 10), mx = parseInt(d['max_' + i], 10);
+        if (!name) { errors.push('Draft ' + (i + 1) + ': the package name is required.'); continue; }
+        if (!(price > 0)) { errors.push(name + ': enter a price greater than zero.'); continue; }
+        if (!(mn >= 1 && mx >= mn)) { errors.push(name + ': guest capacity is invalid.'); continue; }
+        const flat = d['ptype_' + i] === 'package';
+        if (flat && db.hasPriceType === false) { flash('One price per package needs the database update (6-pending-sellers.sql) first.', 'error'); return route(); }
+        const row = { seller_id: s.id, name, description: '', price, min_guests: mn, max_guests: mx, menu: String(d['menu_' + i] || '').trim(), inclusions: String(d['incl_' + i] || '').trim(), event_types: '', active: true, removed: false };
+        if (db.hasPriceType !== false) row.price_type = flat ? 'package' : 'head';
+        rows.push(row);
+      }
+      if (errors.length) { errors.forEach(e => flash(e, 'error')); return route(); }
+      if (!rows.length) { flash('Tick at least one package to save.', 'error'); return route(); }
+      await change(sb.from('packages').insert(rows));
+      logAct('Imported ' + rows.length + ' package' + (rows.length === 1 ? '' : 's') + ' from a pasted menu');
+      importDraft = null;
+      flash(rows.length + ' package' + (rows.length === 1 ? '' : 's') + ' added. You can edit each one anytime.', 'success');
       go('#/seller/packages');
     },
 
@@ -1330,11 +1590,14 @@
       const p = db.packages.find(x => x.id === Number(form.dataset.id) && x.sellerId === mySeller().id && !x.removed); // own packages only
       if (!p) { flash('Package not found.', 'error'); return route(); }
       const price = parseFloat(d.price), mn = parseInt(d.minGuests, 10), mx = parseInt(d.maxGuests, 10);
-      if (!(price > 0)) { flash('Enter a price per head greater than zero.', 'error'); return route(); }
+      if (!(price > 0)) { flash('Enter a price greater than zero.', 'error'); return route(); }
       if (!(mn >= 1 && mx >= mn)) { flash('Guest capacity is invalid (minimum must be at least 1 and not above the maximum).', 'error'); return route(); }
       const old = p.price;
-      await change(sb.from('packages').update({ price, min_guests: mn, max_guests: mx, inclusions: d.inclusions.trim() }).eq('id', p.id).eq('seller_id', p.sellerId).eq('removed', false));
-      logAct(`Updated prices and inclusions of "${p.name}"` + (old !== price ? ` (${peso(old)} to ${peso(price)} per head)` : ''));
+      const upd = { price, min_guests: mn, max_guests: mx, inclusions: d.inclusions.trim() };
+      if (db.hasPriceType !== false) upd.price_type = d.priceType === 'package' ? 'package' : 'head';
+      else if (d.priceType === 'package') { flash('Price type needs the database update (6-pending-sellers.sql) first.', 'error'); return route(); }
+      await change(sb.from('packages').update(upd).eq('id', p.id).eq('seller_id', p.sellerId).eq('removed', false));
+      logAct(`Updated prices and inclusions of "${p.name}"` + (old !== price ? ` (${peso(old)} to ${peso(price)})` : ''));
       await reload('Prices and inclusions saved for ' + p.name + '.');
     }
   };
@@ -1342,6 +1605,7 @@
   /* ---------- Button handlers (data-act="...") ---------- */
   const actions = {
     async logout() {
+      importDraft = null;
       if (me()) await logAct('Logged out');
       await sb.auth.signOut();
       session = null;
@@ -1565,7 +1829,7 @@
     if (e.target.id === 'concernMsg') { const n = $('#concernCount'); if (n) n.textContent = e.target.value.length; }
     if (e.target.id === 'guests') {
       const n = parseInt(e.target.value, 10) || 0;
-      $('#total').textContent = peso(Number(e.target.dataset.price) * n);
+      $('#total').textContent = peso(e.target.dataset.flat === '1' ? Number(e.target.dataset.price) : Number(e.target.dataset.price) * n);
     }
   });
 

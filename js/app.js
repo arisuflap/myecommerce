@@ -55,13 +55,16 @@
         sb.from('concerns').select('*').order('id', { ascending: false }).limit(200)
       );
     }
+    // Reviews are optional: if their SQL has not been run yet, the rest of the site still works.
+    let reviewRows = [];
+    try { const rv = await sb.from('reviews').select('*').order('id', { ascending: false }).limit(500); if (!rv.error && rv.data) reviewRows = rv.data; } catch (e) { /* ignore */ }
     const res = await Promise.all(jobs);
     res.forEach((r, i) => { if (r.error && i !== 7) throw r.error; }); // the concerns list (index 7) may be missing until its SQL is run: the rest of the site still works
     const rows = i => (res[i] && res[i].data) || [];
 
     const next = { users: [], sellers: [], packages: [], reservations: [], notifications: [], activity: [], references: [], concerns: [] };
     next.users = rows(0).map(p => ({ id: nid(p.id), uid: p.id, username: p.username || '', fullName: p.full_name || '', email: p.email || '', phone: p.phone || '', role: p.role, status: p.status, createdAt: p.created_at }));
-    next.sellers = rows(1).map(s => ({ id: s.id, userId: nid(s.user_id), businessName: s.business_name || '', description: s.description || '', address: s.address || '', landmark: s.landmark || '', phone: s.phone || '', email: s.email || '', mapLink: s.map_link || '', photo: s.photo || '', maxPerDay: s.max_per_day || 1, slug: s.slug || '', qrImage: s.qr_image || '', downPct: s.down_payment_pct || 30, payNote: s.payment_note || '', payWindow: s.pay_window_hours || 24 }));
+    next.sellers = rows(1).map(s => ({ id: s.id, userId: nid(s.user_id), businessName: s.business_name || '', description: s.description || '', address: s.address || '', landmark: s.landmark || '', phone: s.phone || '', email: s.email || '', mapLink: s.map_link || '', photo: s.photo || '', maxPerDay: s.max_per_day || 1, slug: s.slug || '', qrImage: s.qr_image || '', downPct: s.down_payment_pct || 30, payNote: s.payment_note || '', payWindow: s.pay_window_hours || 24, isOpen: s.is_open !== false }));
     next.packages = rows(2).map(p => ({ id: p.id, sellerId: p.seller_id, name: p.name || '', description: p.description || '', price: Number(p.price), minGuests: p.min_guests, maxGuests: p.max_guests, menu: p.menu || '', inclusions: p.inclusions || '', eventTypes: p.event_types || '', priceType: p.price_type === 'package' ? 'package' : 'head', active: !!p.active, removed: !!p.removed }));
     next.hasPriceType = rows(2).length ? rows(2).some(p => 'price_type' in p) : null; // null = unknown (no packages yet)
     next.references = rows(3).map(m => ({ id: m.id, sellerId: m.seller_id, category: m.category || '', title: m.title || '', image: m.image || '', active: m.active !== false, createdAt: m.created_at }));
@@ -90,6 +93,7 @@
         next.packages.push({ id: r.packageId, sellerId: r.sellerId, name: 'Package (no longer listed)', description: '', price: 0, minGuests: 0, maxGuests: 0, menu: '', inclusions: '', eventTypes: '', priceType: 'head', active: false, removed: true, stub: true });
       }
     });
+    next.reviews = reviewRows.map(v => ({ id: v.id, reservationId: v.reservation_id, sellerId: v.seller_id, rating: v.rating, comment: v.comment || '', name: v.customer_name || 'Customer', createdAt: v.created_at }));
     db = next;
   }
 
@@ -231,6 +235,10 @@
   const sellerById = id => db.sellers.find(s => s.id === id);
   const userById = id => db.users.find(u => u.id === id);
   const pkgById = id => db.packages.find(p => p.id === id);
+  const reviewsOf = sid => (db.reviews || []).filter(v => v.sellerId === sid);
+  const ratingOf = sid => { const l = reviewsOf(sid); return { n: l.length, avg: l.length ? l.reduce((a, v) => a + v.rating, 0) / l.length : 0 }; };
+  const stars = n => '★'.repeat(Math.round(n)) + '☆'.repeat(5 - Math.round(n));
+  const ratingTag = sid => { const r = ratingOf(sid); return r.n ? `<span class="rtag" title="${r.n} review${r.n === 1 ? '' : 's'}"><b>${r.avg.toFixed(1)}</b> ${stars(r.avg)} <small>(${r.n})</small></span>` : '<span class="small muted">No reviews yet</span>'; };
 
   // The seller accounts shown in the administrator's "Manage sellers" screens.
   function adminSellerRows() {
@@ -485,7 +493,8 @@
       <p class="muted small">📍 ${esc(s.address || 'Naval, Biliran')} · <a href="${esc(mapOpenUrl(s))}" target="_blank" rel="noopener">View on Google Maps</a></p>
       ${s.phone ? `<p class="muted small">📞 ${esc(s.phone)}</p>` : ''}
       <p>${esc(s.description || 'Catering services in Naval, Biliran.')}</p>
-      <p class="small muted">${pk.length} package${pk.length === 1 ? '' : 's'}${min ? ` · from <b>${peso(min)}</b>` : ''}</p>
+      <p class="small muted">${pk.length} package${pk.length === 1 ? '' : 's'}${min ? ` · from <b>${peso(min)}</b>` : ''}${s.isOpen === false ? ' · <b style="color:var(--danger)">Not taking bookings</b>' : ''}</p>
+      <p style="margin:4px 0">${ratingTag(s.id)}</p>
       <a class="btn sm" href="#/business/${s.id}">View packages</a></div>`;
   }
 
@@ -547,7 +556,8 @@
     const previewOnly = own && !publicSellers().some(x => x.id === id);
     const pk = (previewOnly ? db.packages.filter(p => p.sellerId === id && p.active && !p.removed) : publicPackages().filter(p => p.sellerId === id)).sort((a, b) => a.price - b.price);
     view((previewOnly ? '<div class="notice"><b>Preview.</b> Customers cannot see this page until the administrator approves your account.</div>' : '') + `<section class="bizhero ph sp-${s.id}"><span class="eyebrow">Caterer in Naval, Biliran</span>
-        <h1>${esc(s.businessName)}</h1><p>📍 ${esc(s.address || 'Naval, Biliran')}</p></section>
+        <h1>${esc(s.businessName)}</h1><p>📍 ${esc(s.address || 'Naval, Biliran')}</p><p>${ratingTag(s.id)}</p></section>
+      ${s.isOpen === false ? '<div class="notice"><b>Not taking new bookings right now.</b> You can still look at the packages. Please check again later.</div>' : ''}
       <div class="locgrid">
         <div class="card">
           <h3>Contact and location</h3>
@@ -565,7 +575,8 @@
       </div>
       ${(() => { const refs = db.references.filter(r => r.sellerId === s.id && r.active !== false); return refs.length ? `<h2>Category menu references</h2><div class="reference-grid">${refs.map(r => `<figure class="reference-card"><img src="${esc(r.image)}" alt="${esc(r.title)}"><figcaption><b>${esc(r.title)}</b><span>${esc(r.category)}</span></figcaption></figure>`).join('')}</div>` : ''; })()}
       <h2>Packages and menus</h2>
-      ${pk.length ? `<div class="grid">${pk.map(p => pkgCard(p, false)).join('')}</div>` : '<p class="muted">This caterer has no active packages yet.</p>'}`);
+      ${pk.length ? `<div class="grid">${pk.map(p => pkgCard(p, false)).join('')}</div>` : '<p class="muted">This caterer has no active packages yet.</p>'}
+      <h2>Customer reviews</h2>${reviewsOf(s.id).length ? reviewsOf(s.id).slice(0, 10).map(v => `<div class="card" style="margin-bottom:10px"><b class="rtag">${stars(v.rating)}</b> <span class="small muted">${esc(v.name)} · ${esc(fdate((v.createdAt || '').slice(0, 10)))}</span>${v.comment ? `<p style="margin:6px 0 0">${esc(v.comment)}</p>` : ''}</div>`).join('') : '<p class="muted">No reviews yet. Customers can rate this caterer after their event.</p>'}`);
   });
 
   add(/^\/packages$/, (_, q) => {
@@ -625,6 +636,7 @@
     if (!p) return view(errorPage(404, 'This package is not available.'));
     if (!requireRole('customer')) return;
     const s = sellerById(p.sellerId);
+    if (s.isOpen === false) return view(`<div class="card form-card"><h1>${esc(s.businessName)} is closed for bookings</h1><p class="muted">This caterer is not taking new reservations right now. Please check again later or choose another caterer.</p><p><a class="btn" href="#/packages">Browse other packages</a></p></div>`);
     view(`<div class="card form-card wide"><h1>Reserve: ${esc(p.name)}</h1>
       <p class="muted">${esc(s.businessName)} · ${peso(p.price)} ${flatPrice(p) ? 'per package' : 'per head'} · ${p.minGuests}–${p.maxGuests} guests</p>
       <p class="small muted">📍 ${esc(s.address || 'Naval, Biliran')} · <a href="${esc(mapOpenUrl(s))}" target="_blank" rel="noopener">View on Google Maps</a></p>
@@ -642,22 +654,106 @@
       </form></div>`);
   });
 
+  (function addCustStyles() {
+    const el = document.createElement('style');
+    el.textContent = `
+      .cr{--n:#0B2A5B;--g:#E9B949;--ok:#1b8a4a;--bad:#c0392b;--mut:#5a6a82;--ln:#e3dcc9}
+      .cr-chips{display:flex;flex-wrap:wrap;gap:10px;margin:8px 0 18px}
+      .cr-chip{display:flex;align-items:baseline;gap:8px;padding:8px 16px;border-radius:99px;background:#fff;border:1px solid var(--ln);font-size:.9rem;color:var(--mut)}
+      .cr-chip b{font-size:1.2rem;color:var(--n)}
+      .cr-chip.hot{background:#fff4d6;border-color:#f1deaa}
+      .cr-list{display:grid;gap:16px}
+      .cr-card{background:#fff;border:1px solid var(--ln);border-radius:18px;padding:18px 20px;box-shadow:0 8px 22px -16px rgba(11,42,91,.4)}
+      .cr-card.need{border-color:#e8c25a;box-shadow:0 0 0 3px rgba(233,185,73,.25),0 8px 22px -16px rgba(11,42,91,.4)}
+      .cr-head{display:flex;gap:14px;align-items:flex-start}
+      .cr-date{flex:0 0 62px;text-align:center;border-radius:14px;background:var(--n);color:#fff;padding:8px 0;line-height:1.1}
+      .cr-date b{display:block;font-size:1.5rem}.cr-date small{font-size:.74rem;color:var(--g);font-weight:700}
+      .cr-info{flex:1;min-width:0}
+      .cr-info h3{margin:0 0 2px;font-size:1.1rem}
+      .cr-info p{margin:0;color:var(--mut);font-size:.9rem}
+      .cr-total{text-align:right}
+      .cr-total b{display:block;font-size:1.25rem;color:var(--n)}
+      .cr-total span{font-size:.8rem;color:var(--mut)}
+      .cr-steps{display:flex;margin:16px 0 8px;padding:0;list-style:none}
+      .cr-steps li{flex:1;position:relative;text-align:center;font-size:.8rem;color:var(--mut);padding-top:30px}
+      .cr-steps li::before{content:"";position:absolute;top:10px;left:-50%;width:100%;height:3px;background:#e4e8f0}
+      .cr-steps li:first-child::before{display:none}
+      .cr-steps li i{position:absolute;top:0;left:50%;margin-left:-11px;width:22px;height:22px;border-radius:50%;background:#e4e8f0;color:#8896ab;font-style:normal;font-weight:800;font-size:.72rem;display:flex;align-items:center;justify-content:center;z-index:1}
+      .cr-steps li.done{color:var(--n);font-weight:600}
+      .cr-steps li.done i{background:var(--ok);color:#fff}
+      .cr-steps li.done::before{background:var(--ok)}
+      .cr-steps li.now i{background:var(--g);color:var(--n);box-shadow:0 0 0 4px rgba(233,185,73,.3)}
+      .cr-steps li.now{color:var(--n);font-weight:700}
+      .cr-steps li.now::before{background:var(--g)}
+      .cr-steps li.bad{color:var(--bad);font-weight:700}
+      .cr-steps li.bad i{background:var(--bad);color:#fff}
+      .cr-steps li.bad::before{background:var(--bad)}
+      .cr-foot{display:flex;flex-wrap:wrap;gap:10px 14px;align-items:center;justify-content:space-between;margin-top:12px;padding-top:12px;border-top:1px dashed #e8e0cc}
+      .cr-foot .txt{font-size:.9rem;color:var(--mut)}
+      .cr-foot .txt b{color:var(--n)}
+      .cr-btns{display:flex;gap:8px;flex-wrap:wrap}
+      .cr-note{margin-top:8px;padding:8px 12px;border-radius:10px;background:#f4f7fb;font-size:.88rem;color:#41526b}
+      @media(max-width:560px){.cr-head{flex-wrap:wrap}.cr-total{text-align:left;width:100%}.cr-steps li{font-size:.7rem}}
+    `;
+    document.head.appendChild(el);
+  })();
+
   add(/^\/my-reservations$/, () => {
     if (!requireRole('customer')) return;
     const rows = db.reservations.filter(r => r.customerId === me().id).sort((a, b) => b.id - a.id);
-    view(`<h1>My reservations</h1>` + (rows.length ? `<div class="tablewrap"><table>
-      <tr><th>#</th><th>Package</th><th>Event</th><th>Guests</th><th>Total</th><th>Status</th><th>Down payment</th><th></th></tr>
-      ${rows.map(r => {
-        const p = pkgById(r.packageId), s = sellerById(r.sellerId);
-        return `<tr><td>${r.id}</td>
-          <td><b>${esc(p.name)}</b><br><span class="muted small">${esc(s.businessName)}${s.phone ? ' · ' + esc(s.phone) : ''}</span></td>
-          <td>${fdate(r.date)}<br><span class="muted small">${esc(r.eventType)} · ${esc(r.location)}</span></td>
-          <td>${r.guests}</td><td>${peso(r.total)}</td>
-          <td>${badge(r.status)}${r.sellerNote ? `<br><span class="small muted">Note: ${esc(r.sellerNote)}</span>` : ''}</td>
-          <td>${r.status !== 'approved' ? '<span class="muted small">—</span>' : `${payBadge(r)}<br><span class="small muted">Due: ${peso(dueOf(r, s))}</span>${payByNote(r)}<br>`
-            + (r.payStatus === 'received' ? `<a class="btn sm" href="#/receipt/${r.id}">View receipt</a>` : `<a class="btn sm" href="#/pay/${r.id}">${r.payStatus === 'submitted' ? 'View payment' : 'Pay now'}</a>`)}</td>
-          <td>${['pending', 'approved'].includes(r.status) && r.payStatus !== 'received' ? `<button class="btn warn sm" data-act="cancel" data-id="${r.id}">Cancel</button>` : ''}</td></tr>`;
-      }).join('')}</table></div>` : `<p class="muted">You have no reservations yet.</p><a class="btn" href="#/packages">Browse packages</a>`));
+    const toPay = rows.filter(r => r.status === 'approved' && r.payStatus === 'unpaid').length;
+    const waiting = rows.filter(r => r.status === 'pending').length;
+    const paid = rows.filter(r => r.payStatus === 'received' && r.status === 'approved').length;
+    const card = r => {
+      const p = pkgById(r.packageId), s = sellerById(r.sellerId), d = new Date(r.date + 'T00:00:00');
+      const bad = r.status === 'rejected' || r.status === 'cancelled';
+      const approved = r.status === 'approved', received = r.payStatus === 'received', past = r.date < todayStr();
+      // 4 steps: sent, caterer answer, down payment, event day
+      const st = [
+        ['Request sent', 'done', '✓'],
+        [r.status === 'rejected' ? 'Declined' : r.status === 'cancelled' ? 'Cancelled' : approved ? 'Approved' : 'Caterer reviews', bad ? 'bad' : approved ? 'done' : 'now', bad ? '✕' : approved ? '✓' : '2'],
+        [received ? 'Down payment paid' : r.payStatus === 'submitted' ? 'Caterer checks proof' : 'Pay down payment', bad ? '' : received ? 'done' : approved ? 'now' : '', received ? '✓' : '3'],
+        [past && received ? 'Event done' : 'Event day', past && received ? 'done' : '', past && received ? '✓' : '4']
+      ];
+      const need = approved && r.payStatus === 'unpaid';
+      const pay = r.status !== 'approved' ? '' : received ? `<a class="btn sm" href="#/receipt/${r.id}">View receipt</a>` : `<a class="btn sm" href="#/pay/${r.id}">${r.payStatus === 'submitted' ? 'View payment' : 'Pay now'}</a>`;
+      const cancel = ['pending', 'approved'].includes(r.status) && r.payStatus !== 'received' ? `<button class="btn warn sm" data-act="cancel" data-id="${r.id}">Cancel</button>` : '';
+      return `<div class="cr-card ${need ? 'need' : ''}">
+        <div class="cr-head"><div class="cr-date"><b>${d.getDate()}</b><small>${d.toLocaleString('en-PH', { month: 'short' })} ${d.getFullYear()}</small></div>
+          <div class="cr-info"><h3>${esc(p.name)}</h3><p>${esc(s.businessName)}${s.phone ? ' · ' + esc(s.phone) : ''}</p><p>${esc(r.eventType)} · ${r.guests} guests · ${esc(r.location)}</p></div>
+          <div class="cr-total"><b>${peso(r.total)}</b><span>Reservation #${r.id}</span><br>${badge(r.status)}</div></div>
+        <ol class="cr-steps">${st.map(x => `<li class="${x[1]}"><i>${x[2]}</i>${x[0]}</li>`).join('')}</ol>
+        ${r.sellerNote ? `<div class="cr-note">Note from the caterer: ${esc(r.sellerNote)}</div>` : ''}
+        ${(() => { const rv = (db.reviews || []).find(v => v.reservationId === r.id); return rv ? `<div class="cr-note">Your rating: <b class="rtag">${stars(rv.rating)}</b>${rv.comment ? ' · ' + esc(rv.comment) : ''}</div>` : (approved && received && past ? `<div class="cr-foot"><div class="txt">How was the event?</div><div class="cr-btns"><a class="btn sm" href="#/review/${r.id}">Rate this caterer</a></div></div>` : ''); })()}
+        ${r.status === 'approved' || pay || cancel ? `<div class="cr-foot"><div class="txt">${r.status !== 'approved' ? '' : `${payBadge(r)} Due: <b>${peso(dueOf(r, s))}</b>${payByNote(r)}`}</div><div class="cr-btns">${pay}${cancel}</div></div>` : ''}</div>`;
+    };
+    const firstPay = rows.find(r => r.status === 'approved' && r.payStatus === 'unpaid');
+    const custNext = !rows.length ? nextStep('🍽', 'Find a caterer', 'Compare packages and send your first reservation request.', '#/packages', 'Browse packages')
+      : firstPay ? nextStep('💳', 'Pay your down payment', 'Your reservation is approved. Pay before the deadline so it is not cancelled.', '#/pay/' + firstPay.id, 'Pay now')
+      : waiting ? nextStep('⏳', 'Wait for the caterer', 'You will get a notification when your request is answered.', '#/notifications', 'See notifications')
+      : nextStep('🎉', 'Everything is on track', 'Need another caterer? Browse more packages.', '#/packages', 'Browse packages', true);
+    view(`<div class="cr"><h1>My reservations</h1>${custNext}` + (rows.length ? `<div class="cr-chips">
+        <span class="cr-chip"><b>${rows.length}</b> total</span>
+        <span class="cr-chip"><b>${waiting}</b> waiting for the caterer</span>
+        <span class="cr-chip ${toPay ? 'hot' : ''}"><b>${toPay}</b> to pay</span>
+        <span class="cr-chip"><b>${paid}</b> paid</span></div>
+        <div class="cr-list">${rows.map(card).join('')}</div>` : `<p class="muted">You have no reservations yet.</p><a class="btn" href="#/packages">Browse packages</a>`) + '</div>');
+  });
+
+  add(/^\/review\/(\d+)$/, ([id]) => {
+    if (!requireRole('customer')) return;
+    const r = db.reservations.find(x => x.id === id && x.customerId === me().id);
+    if (!r) return view(errorPage(404, 'Reservation not found.'));
+    const s = sellerById(r.sellerId);
+    if ((db.reviews || []).some(v => v.reservationId === r.id)) return go('#/my-reservations');
+    if (!(r.status === 'approved' && r.payStatus === 'received' && r.date < todayStr())) return view(errorPage(403, 'You can rate a caterer after your paid event has taken place.'));
+    view(`<div class="card form-card"><h1>Rate ${esc(s.businessName)}</h1><p class="muted">Event on ${fdate(r.date)} · Reservation #${r.id}</p>
+      <form class="stack" data-form="review" data-id="${r.id}">
+        <label>Your rating</label><select name="rating" required>
+          <option value="5">★★★★★ Excellent</option><option value="4">★★★★☆ Good</option><option value="3">★★★☆☆ Okay</option><option value="2">★★☆☆☆ Poor</option><option value="1">★☆☆☆☆ Bad</option></select>
+        <label>Comment (optional)</label><textarea name="comment" maxlength="300" placeholder="Food, service, on-time delivery…"></textarea>
+        <p><button class="btn" type="submit">Send review</button> <a class="btn alt" href="#/my-reservations">Back</a></p>
+      </form></div>`);
   });
 
   // The customer pays the down payment by scanning the caterer's QR code, then sends a screenshot of the receipt.
@@ -978,31 +1074,281 @@
   });
 
   /* ---------- 7. Seller pages (always scoped to the logged-in seller's own business) ---------- */
-  add(/^\/seller$/, () => {
+  // Soft glow background, gentle movement and a "next step" bar. Works with any style.css; switched off when the visitor prefers less motion.
+  (function addMotionStyles() {
+    const el = document.createElement('style');
+    el.textContent = `
+      body{position:relative}
+      body::before{content:"";position:fixed;inset:-15%;z-index:-1;pointer-events:none;
+        background:radial-gradient(38% 34% at 12% 18%,rgba(233,185,73,.26),transparent 70%),
+                   radial-gradient(34% 34% at 88% 12%,rgba(27,138,156,.20),transparent 70%),
+                   radial-gradient(40% 40% at 72% 92%,rgba(26,74,138,.16),transparent 70%);
+        animation:glowdrift 26s ease-in-out infinite alternate}
+      @keyframes glowdrift{0%{transform:translate3d(0,0,0) scale(1)}50%{transform:translate3d(2.5%,2%,0) scale(1.06)}100%{transform:translate3d(-2%,3%,0) scale(1.02)}}
+      header.nav{box-shadow:0 2px 0 #E9B949,0 8px 26px -8px rgba(233,185,73,.55)!important}
+      #app>*{animation:viewin .5s cubic-bezier(.2,.8,.2,1) both}
+      #app>*:nth-child(2){animation-delay:.05s}#app>*:nth-child(3){animation-delay:.1s}#app>*:nth-child(4){animation-delay:.15s}#app>*:nth-child(n+5){animation-delay:.2s}
+      @keyframes viewin{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
+      .card,.sd-card,.sd-kpi,.cr-card,.stat,.sd-ev,.tile,.sd-act{transition:transform .25s ease,box-shadow .25s ease}
+      .sd-card:hover,.sd-kpi:hover,.cr-card:hover,.sd-ev:hover,.sellercard:hover,.pkgcard:hover{transform:translateY(-3px);box-shadow:0 16px 34px -14px rgba(233,185,73,.65),0 2px 6px rgba(11,42,91,.08)}
+      .sd-act:hover,.tile:hover{box-shadow:0 18px 34px -12px rgba(233,185,73,.7)}
+      .btn{transition:transform .2s ease,box-shadow .2s ease,background .2s ease}
+      .btn:hover{box-shadow:0 8px 22px -6px rgba(233,185,73,.8)}
+      .cr-card.need{animation:viewin .5s both,needglow 2.4s ease-in-out .6s infinite}
+      @keyframes needglow{0%,100%{box-shadow:0 0 0 3px rgba(233,185,73,.22),0 8px 22px -16px rgba(11,42,91,.4)}50%{box-shadow:0 0 0 6px rgba(233,185,73,.38),0 0 26px 2px rgba(233,185,73,.45)}}
+      .cr-steps li.now i{animation:nowpulse 1.8s ease-in-out infinite}
+      @keyframes nowpulse{0%,100%{box-shadow:0 0 0 4px rgba(233,185,73,.3)}50%{box-shadow:0 0 0 9px rgba(233,185,73,.08)}}
+      .sd-status.live i{animation:livepulse 1.8s ease-in-out infinite}
+      @keyframes livepulse{0%,100%{box-shadow:0 0 0 0 rgba(74,222,128,.7)}70%{box-shadow:0 0 0 8px rgba(74,222,128,0)}}
+      .dot{animation:livepulse 2s ease-in-out infinite}
+      .sd-bar i,.sd-rank i{transform-origin:left;animation:growx .9s cubic-bezier(.2,.8,.2,1) .15s both}
+      .sd-months i{transform-origin:bottom;animation:growy .9s cubic-bezier(.2,.8,.2,1) .15s both}
+      @keyframes growx{from{transform:scaleX(0)}}@keyframes growy{from{transform:scaleY(0)}}
+      .sd-ring svg circle:nth-child(2){animation:ringdraw 1.3s cubic-bezier(.2,.8,.2,1) .2s both}
+      @keyframes ringdraw{from{stroke-dasharray:0 999}}
+      .nx{display:flex;gap:14px;align-items:center;margin:14px 0;padding:14px 18px;border-radius:16px;background:linear-gradient(120deg,#0B2A5B,#1A4A8A);color:#fff;box-shadow:0 14px 30px -16px rgba(11,42,91,.8),0 0 0 1px rgba(233,185,73,.35)}
+      .nx .ic{flex:0 0 44px;height:44px;border-radius:14px;background:rgba(233,185,73,.18);display:flex;align-items:center;justify-content:center;font-size:1.4rem}
+      .nx div{flex:1;min-width:0}.nx small{display:block;color:#E9B949;font-weight:700;font-size:.78rem}
+      .nx b{display:block;font-size:1.02rem;line-height:1.3}.nx span{font-size:.88rem;color:#d6e3f7}
+      .nx .btn{background:#E9B949;border-color:#E9B949;color:#071C40;white-space:nowrap}
+      .nx.calm{background:linear-gradient(120deg,#17693a,#1b8a4a)}
+      @media(max-width:560px){.nx{flex-wrap:wrap}.nx .btn{width:100%}}
+      @media (prefers-reduced-motion:reduce){body::before,#app>*,.cr-card.need,.cr-steps li.now i,.sd-status.live i,.dot,.sd-bar i,.sd-rank i,.sd-months i,.sd-ring svg circle{animation:none!important}.card,.sd-card,.sd-kpi,.cr-card,.btn{transition:none!important}}
+    `;
+    document.head.appendChild(el);
+  })();
+  const nextStep = (icon, title, text, href, label, calm) => `<div class="nx ${calm ? 'calm' : ''}"><span class="ic" aria-hidden="true">${icon}</span><div><small>Next step</small><b>${title}</b><span>${text}</span></div>${href ? `<a class="btn" href="${href}">${label}</a>` : ''}</div>`;
+
+  (function addDashStyles() {
+    const el = document.createElement('style');
+    el.textContent = `
+      .sd{--n:#0B2A5B;--g:#E9B949;--t:#1B8A9C;--ok:#1b8a4a;--bad:#c0392b;--ink:#14233b;--mut:#5a6a82;--ln:#e3dcc9}
+      .sd h2{margin:26px 0 10px;font-size:1.25rem}
+      .sd-status{align-self:flex-start;display:inline-flex;align-items:center;gap:7px;margin-top:10px;padding:5px 14px;border-radius:99px;font-size:.85rem;font-weight:700;background:rgba(255,255,255,.18);color:#fff;border:1px solid rgba(255,255,255,.4)}
+      .sd-status i{width:9px;height:9px;border-radius:50%;background:var(--g)}
+      .sd-status.live i{background:#4ade80}
+      .sd-top{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(0,1fr);gap:16px;margin:16px 0}
+      .sd-card{background:#fff;border:1px solid var(--ln);border-radius:16px;padding:18px 20px;box-shadow:0 8px 22px -16px rgba(11,42,91,.4)}
+      .sd-card h3{margin:0 0 4px;font-size:1.05rem}
+      .sd-sub{margin:0 0 12px;color:var(--mut);font-size:.88rem}
+      .sd-setup{display:flex;gap:18px;align-items:center}
+      .sd-ring{flex:0 0 112px;position:relative;width:112px;height:112px}
+      .sd-ring svg{width:112px;height:112px;transform:rotate(-90deg)}
+      .sd-ring b{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;font-size:1.5rem;color:var(--n);line-height:1}
+      .sd-ring b small{font-size:.7rem;color:var(--mut);font-weight:600;margin-top:2px}
+      .sd-steps{list-style:none;margin:0;padding:0;flex:1;min-width:0}
+      .sd-steps li{display:flex;align-items:center;gap:9px;padding:5px 0;font-size:.92rem;border-bottom:1px dashed #efe9d8}
+      .sd-steps li:last-child{border-bottom:0}
+      .sd-steps .mk{flex:0 0 20px;height:20px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:.72rem;font-weight:800;background:#eef1f6;color:#8896ab;border:1.5px solid #cdd7e6}
+      .sd-steps .done .mk{background:var(--ok);border-color:var(--ok);color:#fff}
+      .sd-steps .done span{color:var(--mut)}
+      .sd-steps a{margin-left:auto;font-size:.82rem;font-weight:700;white-space:nowrap}
+      .sd-kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:14px;margin:6px 0 4px}
+      .sd-kpi{position:relative;background:#fff;border:1px solid var(--ln);border-radius:16px;padding:16px 18px 14px 70px;box-shadow:0 8px 22px -16px rgba(11,42,91,.4);min-height:88px}
+      .sd-kpi .ic{position:absolute;left:16px;top:16px;width:42px;height:42px;border-radius:13px;display:flex;align-items:center;justify-content:center;font-size:1.3rem;background:var(--n);color:var(--g)}
+      .sd-kpi.t .ic{background:var(--t);color:#fff}.sd-kpi.g .ic{background:var(--g);color:var(--n)}.sd-kpi.o .ic{background:#e8f6ee;color:var(--ok)}
+      .sd-kpi b{display:block;font-size:1.65rem;line-height:1.1;color:var(--n)}
+      .sd-kpi span{display:block;color:var(--mut);font-size:.88rem;margin-top:2px}
+      .sd-kpi em{display:block;font-style:normal;font-size:.76rem;color:var(--mut);margin-top:3px}
+      .sd-charts{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:16px;margin:16px 0}
+      .sd-bar{display:flex;height:16px;border-radius:99px;overflow:hidden;background:#eef1f6;margin:6px 0 12px}
+      .sd-bar i{display:block;height:100%}
+      .sd-legend{display:flex;flex-wrap:wrap;gap:6px 16px;font-size:.88rem}
+      .sd-legend span{display:flex;align-items:center;gap:6px}
+      .sd-legend span::before{content:"";width:10px;height:10px;border-radius:3px;background:var(--c)}
+      .sd-legend b{color:var(--n)}
+      .sd-months{display:flex;align-items:flex-end;gap:10px;height:120px;padding-top:6px}
+      .sd-months div{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;height:100%;font-size:.78rem;color:var(--mut)}
+      .sd-months i{display:block;width:100%;max-width:38px;border-radius:8px 8px 3px 3px;background:linear-gradient(180deg,var(--g),#d9a52c);min-height:3px}
+      .sd-months b{font-size:.8rem;color:var(--n);margin-bottom:3px}
+      .sd-empty{padding:14px;border:2px dashed #d7cdb2;border-radius:12px;background:#fffdf7;color:var(--mut);font-size:.9rem;text-align:center}
+      .sd-actions{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
+      .sd-act{position:relative;display:flex;flex-direction:column;gap:4px;padding:14px 16px;border-radius:16px;text-decoration:none;color:#fff;min-height:118px;justify-content:flex-end;background-color:var(--n);background-size:cover;background-position:center;box-shadow:0 8px 22px -14px rgba(11,42,91,.6);transition:transform .2s}
+      .sd-act:hover{transform:translateY(-3px);color:#fff}
+      .sd-act .ic{font-size:1.5rem;line-height:1;margin-bottom:auto}
+      .sd-act strong{font-size:1rem;text-shadow:0 2px 8px rgba(0,0,0,.5)}
+      .sd-act small{color:#dbe7f7;font-size:.8rem;text-shadow:0 2px 8px rgba(0,0,0,.5)}
+      .sd-act .bd{position:absolute;right:12px;top:12px;min-width:26px;height:26px;padding:0 8px;border-radius:99px;background:var(--g);color:var(--n);font-weight:800;font-size:.85rem;display:flex;align-items:center;justify-content:center}
+      .sd-events{display:grid;gap:10px}
+      .sd-ev{display:flex;gap:14px;align-items:center;background:#fff;border:1px solid var(--ln);border-radius:14px;padding:12px 16px}
+      .sd-date{flex:0 0 58px;text-align:center;border-radius:12px;background:var(--n);color:#fff;padding:6px 0;line-height:1.1}
+      .sd-date b{display:block;font-size:1.4rem}.sd-date small{font-size:.72rem;color:var(--g);font-weight:700}
+      .sd-ev .info{flex:1;min-width:0}.sd-ev .info b{display:block}
+      .sd-ev .info span{color:var(--mut);font-size:.86rem}
+      .sd-todo,.sd-feed{list-style:none;margin:0;padding:0}
+      .sd-todo li{display:flex;gap:12px;align-items:center;padding:10px 0;border-bottom:1px dashed #efe9d8}
+      .sd-todo li:last-child{border-bottom:0}
+      .sd-todo .ic{flex:0 0 38px;height:38px;border-radius:12px;background:#fff4d6;display:flex;align-items:center;justify-content:center;font-size:1.15rem}
+      .sd-todo div{flex:1;min-width:0}.sd-todo b{display:block}.sd-todo small{color:var(--mut)}
+      .sd-feed li{padding:8px 0;border-bottom:1px dashed #efe9d8;font-size:.9rem}
+      .sd-feed li:last-child{border-bottom:0}.sd-feed small{display:block;color:var(--mut);font-size:.78rem}
+      .sd-rank div{position:relative;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:2px 10px;padding:6px 0;font-size:.9rem}
+      .sd-rank span{grid-column:1}.sd-rank b{grid-column:2;color:var(--n)}
+      .sd-rank i{grid-column:1 / 3;display:block;height:8px;border-radius:99px;background:linear-gradient(90deg,var(--g),#d9a52c)}
+      @media(max-width:860px){.sd-top{grid-template-columns:1fr}}
+      @media(max-width:560px){.sd-actions{grid-template-columns:repeat(2,minmax(0,1fr))}}
+      @media(max-width:520px){.sd-setup{flex-direction:column;align-items:stretch}.sd-ring{align-self:center}}
+    `;
+    document.head.appendChild(el);
+  })();
+
+  // Fixed-date Philippine holidays (moving holidays such as Holy Week are not listed).
+  const PH_HOLIDAYS = { '01-01': "New Year's Day", '04-09': 'Araw ng Kagitingan', '05-01': 'Labor Day', '06-12': 'Independence Day', '08-21': 'Ninoy Aquino Day', '11-01': "All Saints' Day", '11-30': 'Bonifacio Day', '12-08': 'Immaculate Conception', '12-24': 'Christmas Eve', '12-25': 'Christmas Day', '12-30': 'Rizal Day', '12-31': "New Year's Eve" };
+  add(/^\/seller\/calendar$/, (_, q) => {
     if (!requireRole('seller')) return;
     const s = mySeller();
+    const now = new Date(todayStr() + 'T00:00:00');
+    let ym = (q.get('m') || '').match(/^(\d{4})-(\d{2})$/);
+    let y = ym ? +ym[1] : now.getFullYear(), m = ym ? +ym[2] - 1 : now.getMonth();
+    if (m < 0 || m > 11) { y = now.getFullYear(); m = now.getMonth(); }
+    const key = (yy, mm) => yy + '-' + String(mm + 1).padStart(2, '0');
+    const prev = m === 0 ? key(y - 1, 11) : key(y, m - 1), nextM = m === 11 ? key(y + 1, 0) : key(y, m + 1);
+    const mine = db.reservations.filter(r => r.sellerId === s.id && (r.status === 'approved' || r.status === 'pending'));
+    const first = new Date(y, m, 1), days = new Date(y, m + 1, 0).getDate(), lead = first.getDay();
+    let cells = '';
+    for (let i = 0; i < lead; i++) cells += '<div class="cal-c off"></div>';
+    for (let d = 1; d <= days; d++) {
+      const ds = key(y, m) + '-' + String(d).padStart(2, '0');
+      const ap = mine.filter(r => r.date === ds && r.status === 'approved'), pe = mine.filter(r => r.date === ds && r.status === 'pending');
+      const full = ap.length >= s.maxPerDay;
+      const hol = PH_HOLIDAYS[ds.slice(5)];
+      cells += `<div class="cal-c ${full ? 'full' : ap.length ? 'part' : ''} ${ds < todayStr() ? 'past' : ''} ${ds === todayStr() ? 'today' : ''}" data-day="${ds}" tabindex="0" role="button" aria-label="${ds}"><b>${d}</b>${ds === todayStr() ? ' <span class="cal-now">Today</span>' : ''}
+        ${hol ? `<span class="cal-hol">${hol}</span>` : ''}
+        ${full ? '<span class="cal-t">Full</span>' : ap.length ? `<span class="cal-t">${ap.length}/${s.maxPerDay} booked</span>` : ''}
+        ${ap.slice(0, 2).map(r => `<span class="cal-e">${esc((userById(r.customerId) || {}).fullName || 'Customer')}</span>`).join('')}
+        ${pe.length ? `<span class="cal-p">${pe.length} pending</span>` : ''}</div>`;
+    }
+    const upc = mine.filter(r => r.date >= todayStr() && r.status === 'approved').sort((a, b) => a.date.localeCompare(b.date)).slice(0, 5);
+    const detail = ds => { const l = mine.filter(r => r.date === ds); return `<div class="cal-det hidden" data-for="${ds}"><h3>${esc(fdate(ds))}${PH_HOLIDAYS[ds.slice(5)] ? ' · ' + PH_HOLIDAYS[ds.slice(5)] : ''}</h3>${l.length ? l.map(r => { const p = pkgById(r.packageId), c = userById(r.customerId) || {}; return `<div class="cal-row"><b>${esc(c.fullName || 'Customer')}</b> ${badge(r.status)}<br><span class="small muted">${esc(p.name)} · ${esc(r.eventType)} · ${r.guests} guests · ${esc(r.location)}${c.phone ? ' · 📞 ' + esc(c.phone) : ''}</span> <a class="small" href="#/seller/reservations?status=${r.status}">Open</a></div>`; }).join('') : '<p class="muted small">No events on this day. It is free for bookings.</p>'}</div>`; };
+    const days_ = []; for (let d = 1; d <= days; d++) days_.push(key(y, m) + '-' + String(d).padStart(2, '0'));
+    setTimeout(() => {
+      const root = document.querySelector('.cal'); if (!root) return;
+      const show = ds => { root.querySelectorAll('.cal-det').forEach(e => e.classList.toggle('hidden', e.dataset.for !== ds)); root.querySelectorAll('.cal-c').forEach(e => e.classList.toggle('sel', e.dataset.day === ds)); };
+      root.querySelectorAll('.cal-c[data-day]').forEach(c => { c.addEventListener('click', () => show(c.dataset.day)); c.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); show(c.dataset.day); } }); });
+      show(todayStr().slice(0, 7) === key(y, m) ? todayStr() : key(y, m) + '-01');
+      // Live clock (Philippine time) and automatic refresh so new requests appear without reloading.
+      const clock = document.getElementById('calclock');
+      const tick = () => { if (!document.getElementById('calclock')) return clearInterval(iv); clock.textContent = new Date().toLocaleString('en-PH', { timeZone: 'Asia/Manila', weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', hour: 'numeric', minute: '2-digit', second: '2-digit' }); };
+      const iv = setInterval(tick, 1000); tick();
+      const h0 = location.hash;
+      const poll = setInterval(async () => { if (!document.getElementById('calclock') || location.hash !== h0) return clearInterval(poll); try { await refreshAll(); if (location.hash === h0 && document.getElementById('calclock')) route(); } catch (e) { /* try again next time */ } }, 30000);
+    }, 0);
+    view(`<div class="cal"><h1>Reservation calendar</h1>
+      <p class="cal-clock"><span class="livedot"></span><b id="calclock"></b> <span class="small muted">· updates by itself</span></p>
+      <p class="muted">Each day can take up to <b>${s.maxPerDay}</b> approved event${s.maxPerDay === 1 ? '' : 's'}. Full days cannot be booked again. Change this number in your <a href="#/seller/profile">business profile</a>.</p>
+      <p class="cal-nav"><a class="btn alt sm" href="#/seller/calendar?m=${prev}">‹ Previous</a> <b>${first.toLocaleString('en-PH', { month: 'long' })} ${y}</b> <a class="btn alt sm" href="#/seller/calendar?m=${nextM}">Next ›</a> <a class="btn sm" href="#/seller/calendar">Today</a></p>
+      <div class="cal-grid">${['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map(x => `<div class="cal-h">${x}</div>`).join('')}${cells}</div>
+      ${days_.map(detail).join('')}
+      ${upc.length ? `<h3>Next events</h3><div class="cal-up">${upc.map(r => { const c = userById(r.customerId) || {}, d = new Date(r.date + 'T00:00:00'); return `<div class="cal-row"><b>${esc(fdate(r.date))}</b> · ${esc(c.fullName || 'Customer')}<br><span class="small muted">${esc(pkgById(r.packageId).name)} · ${esc(r.eventType)} · ${r.guests} guests</span></div>`; }).join('')}</div>` : ''}
+      <p class="small muted"><span class="cal-key full"></span> Full &nbsp; <span class="cal-key part"></span> Has booking &nbsp; <span class="cal-key pend"></span> Pending requests</p>
+      <style>
+        .cal-nav{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+        .cal-grid{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:6px}
+        .cal-h{text-align:center;font-weight:700;font-size:.8rem;color:#5a6a82;padding:4px 0}
+        .cal-c{min-height:92px;background:#fff;border:1px solid #e3dcc9;border-radius:10px;padding:6px;display:flex;flex-direction:column;gap:3px;overflow:hidden;font-size:.78rem}
+        .cal-c.off{background:transparent;border:0}.cal-c.past{opacity:.55}
+        .cal-c.today{outline:2px solid #E9B949}.cal-c.part{background:#fff8e4;border-color:#E9B949}
+        .cal-c.full{background:#fde8e5;border-color:#c0392b}
+        .cal-t{font-weight:700;color:#0B2A5B}.cal-c.full .cal-t{color:#c0392b}
+        .cal-e,.cal-p{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;border-radius:6px;padding:1px 5px;text-decoration:none}
+        .cal-e{background:#0B2A5B;color:#fff}.cal-p{background:#E9B949;color:#0B2A5B;font-weight:700}
+        .cal-key{display:inline-block;width:12px;height:12px;border-radius:3px;vertical-align:middle;border:1px solid #c9bfa3}
+        .cal-key.full{background:#fde8e5;border-color:#c0392b}.cal-key.part{background:#fff8e4;border-color:#E9B949}.cal-key.pend{background:#E9B949}
+        .cal-c[data-day]{cursor:pointer;transition:transform .15s,box-shadow .15s}.cal-c[data-day]:hover{transform:translateY(-2px);box-shadow:0 8px 18px -10px rgba(11,42,91,.5)}
+        .cal-c.sel{box-shadow:0 0 0 2px #0B2A5B}.cal-c.today{background:#fffbe9}
+        .cal-now{align-self:flex-start;background:#E9B949;color:#0B2A5B;border-radius:99px;padding:0 6px;font-size:.65rem;font-weight:800}
+        .cal-hol{font-size:.65rem;color:#1B8A9C;font-weight:700;line-height:1.1}
+        .cal-clock{display:flex;align-items:center;gap:8px;margin:0 0 6px}.cal-clock b{color:#0B2A5B}
+        .livedot{width:9px;height:9px;border-radius:50%;background:#1b8a4a;animation:livepulse 1.8s infinite}
+        .cal-det{background:#fff;border:1px solid #e3dcc9;border-radius:14px;padding:12px 16px;margin:14px 0}.cal-det.hidden{display:none}
+        .cal-row{padding:8px 0;border-bottom:1px dashed #e8e0cc}.cal-row:last-child{border:0}
+        .rtag{color:#b8860b;white-space:nowrap}.rtag small{color:#5a6a82}
+        @media(max-width:640px){.cal-c{min-height:64px;padding:3px;font-size:.68rem}.cal-e,.cal-p{font-size:.65rem}}
+      </style></div>`);
+  });
+
+  add(/^\/seller$/, () => {
+    if (!requireRole('seller')) return;
+    const s = mySeller(), pending = isPendingSeller(me());
     const mine = db.reservations.filter(r => r.sellerId === s.id);
+    const count = st => mine.filter(r => r.status === st).length;
     const upcoming = mine.filter(r => r.status === 'approved' && r.date >= todayStr()).sort((a, b) => a.date.localeCompare(b.date)).slice(0, 5);
-    const revenue = mine.filter(r => r.status === 'approved').reduce((t, r) => t + r.total, 0);
-    const toConfirm = mine.filter(r => r.status === 'approved' && r.payStatus === 'submitted').length;
-    view(`<section class="bizhero ph sp-${s.id}"><span class="eyebrow">My business</span><h1>${esc(s.businessName)}</h1><p>Seller dashboard — you can only see and manage your own business records.</p></section>
-      ${isPendingSeller(me()) ? '<div class="notice"><b>Waiting for administrator approval.</b> Your shop is not visible to customers yet and cannot receive reservations. Complete your <a href="#/seller/profile">business profile</a> and <a href="#/seller/packages">packages</a> now. <a href="#/business/' + s.id + '">Preview your shop page</a>.</div>' : ''}
+    const approvedRes = mine.filter(r => r.status === 'approved');
+    const revenue = approvedRes.reduce((t, r) => t + r.total, 0);
+    const toConfirm = approvedRes.filter(r => r.payStatus === 'submitted').length;
+    const activePk = db.packages.filter(p => p.sellerId === s.id && p.active && !p.removed).length;
+    const allPk = db.packages.filter(p => p.sellerId === s.id && !p.removed).length;
+    const refs = db.references.filter(r => r.sellerId === s.id).length;
+    const nPending = count('pending');
+
+    // shop setup checklist
+    const steps = [
+      ['Shop name and address', !!(s.businessName && s.address), '#/seller/profile'],
+      ['Contact number', !!s.phone, '#/seller/profile'],
+      ['Shop photo', photoOk(s.photo), '#/seller/profile'],
+      ['Google Maps location', !!s.mapLink, '#/seller/profile'],
+      ['Payment QR code', imgOk(s.qrImage), '#/seller/profile'],
+      ['At least one package', activePk > 0, '#/seller/import'],
+      ['Approved by the administrator', !pending, '']
+    ];
+    const done = steps.filter(x => x[1]).length, pct = Math.round(done / steps.length * 100);
+    const R = 46, C = 2 * Math.PI * R;
+    const ring = `<div class="sd-ring"><svg viewBox="0 0 112 112" aria-hidden="true"><circle cx="56" cy="56" r="${R}" fill="none" stroke="#eef1f6" stroke-width="11"/><circle cx="56" cy="56" r="${R}" fill="none" stroke="${pct === 100 ? '#1b8a4a' : '#E9B949'}" stroke-width="11" stroke-linecap="round" stroke-dasharray="${(C * pct / 100).toFixed(1)} ${C.toFixed(1)}"/></svg><b>${pct}%<small>${done} of ${steps.length} done</small></b></div>`;
+
+    // reservations by status
+    const statusDefs = [['pending', 'Waiting for you', '#E9B949'], ['approved', 'Approved', '#1b8a4a'], ['rejected', 'Declined', '#c0392b'], ['cancelled', 'Cancelled', '#8896ab']];
+    const total = mine.length;
+    const bar = (defs, getN, n) => `<div class="sd-bar" role="img" aria-label="chart">${defs.map(d => getN(d) ? `<i style="width:${(getN(d) / n * 100).toFixed(1)}%;background:${d[2]}" title="${d[1]}: ${getN(d)}"></i>` : '').join('')}</div><div class="sd-legend">${defs.map(d => `<span style="--c:${d[2]}">${d[1]} <b>${getN(d)}</b></span>`).join('')}</div>`;
+    const statusChart = total ? bar(statusDefs, d => count(d[0]), total) : '<div class="sd-empty">No reservations yet. They will appear here once customers book.</div>';
+    // down payments of approved bookings
+    const payDefs = [['received', 'Down payment paid', '#1b8a4a'], ['submitted', 'Proof sent, please confirm', '#E9B949'], ['unpaid', 'Waiting for payment', '#8896ab']];
+    const payN = d => approvedRes.filter(r => (r.payStatus || 'unpaid') === d[0]).length;
+    const payChart = approvedRes.length ? bar(payDefs, payN, approvedRes.length) : '<div class="sd-empty">Down payments of approved bookings will show here.</div>';
+    // approved events per month (next 6 months from this month)
+    const now = new Date(), months = [];
+    for (let i = 0; i < 6; i++) { const d = new Date(now.getFullYear(), now.getMonth() + i, 1); months.push({ key: d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0'), label: d.toLocaleString('en-PH', { month: 'short' }) }); }
+    months.forEach(m => { m.n = approvedRes.filter(r => (r.date || '').slice(0, 7) === m.key).length; });
+    const maxM = Math.max(1, ...months.map(m => m.n));
+    const monthChart = months.some(m => m.n) ? `<div class="sd-months">${months.map(m => `<div><b>${m.n || ''}</b><i style="height:${Math.max(3, m.n / maxM * 84)}px"></i>${m.label}</div>`).join('')}</div>` : '<div class="sd-empty">No approved events in the next 6 months.</div>';
+
+    const firstTodo = steps.find(x => !x[1] && x[2]);
+    const sellerNext = nPending ? nextStep('📋', 'Answer ' + nPending + ' reservation request' + (nPending > 1 ? 's' : ''), 'Customers are waiting. Accept or decline each one.', '#/seller/reservations', 'Open requests')
+      : toConfirm ? nextStep('🧾', 'Confirm ' + toConfirm + ' payment proof' + (toConfirm > 1 ? 's' : ''), 'A customer sent a down payment screenshot.', '#/seller/reservations?status=approved', 'Review')
+      : firstTodo ? nextStep('🛠', firstTodo[0] === 'At least one package' ? 'Add your packages' : 'Complete: ' + firstTodo[0], pending ? 'Finish your shop while you wait for approval.' : 'A complete shop gets more bookings.', firstTodo[2], firstTodo[0] === 'At least one package' ? 'Paste your menu' : 'Set up now')
+      : nextStep('🎉', pending ? 'Your shop is ready' : 'You are all set', pending ? 'The administrator will approve your shop soon.' : 'Share your shop and wait for new reservation requests.', '', '', true);
+    const act = (href, icon, title, sub, badge) => `<a class="sd-act ph sp-${s.id}" href="${href}"><span class="ic" aria-hidden="true">${icon}</span>${badge ? `<span class="bd">${badge}</span>` : ''}<strong>${title}</strong><small>${sub}</small></a>`;
+    view(`<div class="sd"><section class="bizhero ph sp-${s.id}"><span class="eyebrow">My business</span><h1>${esc(s.businessName)}</h1>
+      <p>Seller dashboard — you can only see and manage your own business records.</p>
+      <span class="sd-status ${pending ? '' : 'live'}"><i></i>${pending ? 'Waiting for administrator approval' : s.isOpen === false ? 'Visible, but closed for new bookings' : 'Live: customers can see your shop'}</span>
+      ${pending ? '' : `<p style="margin:10px 0 0"><button class="btn sm ${s.isOpen === false ? '' : 'alt'}" data-act="toggle-open">${s.isOpen === false ? 'Open for bookings' : 'Close for bookings'}</button> <span class="small">${s.isOpen === false ? 'Customers cannot send new requests.' : 'Switch off when you cannot take more events.'}</span></p>`}</section>
+      ${sellerNext}
+      ${pending ? '<div class="notice"><b>Waiting for administrator approval.</b> Your shop is not visible to customers yet and cannot receive reservations. Finish the checklist below, then <a href="#/business/' + s.id + '">preview your shop page</a>.</div>' : ''}
       ${!imgOk(s.qrImage) ? '<div class="notice">Customers pay their down payment by scanning your QR code. <a href="#/seller/profile">Upload your GCash / bank QR code</a> in your business profile.</div>' : ''}
       ${toConfirm ? `<div class="notice"><b>${toConfirm}</b> payment proof${toConfirm > 1 ? 's are' : ' is'} waiting for you. <a href="#/seller/reservations?status=approved">Review and confirm</a>.</div>` : ''}
-      <div class="stats">
-        <div class="stat"><b>${mine.filter(r => r.status === 'pending').length}</b><span>Pending requests</span></div>
-        <div class="stat"><b>${mine.filter(r => r.status === 'approved').length}</b><span>Approved events</span></div>
-        <div class="stat"><b>${db.packages.filter(p => p.sellerId === s.id && p.active && !p.removed).length}</b><span>Active packages</span></div>
-        <div class="stat"><b>${peso(revenue)}</b><span>Approved bookings value</span></div>
+      <div class="sd-top">
+        <div class="sd-card"><h3>Shop setup</h3><p class="sd-sub">${pct === 100 ? 'Your shop is complete.' : 'Complete these steps so customers can trust and book your shop.'}</p>
+          <div class="sd-setup">${ring}<ul class="sd-steps">${steps.map(x => `<li class="${x[1] ? 'done' : ''}"><i class="mk" aria-hidden="true">${x[1] ? '✓' : ''}</i><span>${x[0]}</span>${!x[1] && x[2] ? `<a href="${x[2]}">${x[2].includes('import') ? 'Add' : 'Set up'}</a>` : ''}</li>`).join('')}</ul></div></div>
+        <div class="sd-card"><h3>Reservations</h3><p class="sd-sub">${total} request${total === 1 ? '' : 's'} so far</p>${statusChart}
+          <h3 style="margin-top:16px">Down payments</h3><p class="sd-sub">For approved bookings</p>${payChart}</div>
       </div>
-      <div class="tiles">
-        <a class="tile ph sp-${s.id}" href="#/seller/reservations"><span>Reservation requests</span></a>
-        <a class="tile ph sp-${s.id}" href="#/seller/packages"><span>Manage packages</span></a>
-        <a class="tile ph sp-${s.id}" href="#/seller/prices"><span>Prices &amp; inclusions</span></a>
-        <a class="tile ph sp-${s.id}" href="#/seller/references"><span>Category references</span></a>
-        <a class="tile ph sp-${s.id}" href="#/seller/profile"><span>Business profile</span></a></div>
-      <h2>Upcoming approved events</h2>` + (upcoming.length ? `<div class="tablewrap"><table><tr><th>Date</th><th>Customer</th><th>Package</th><th>Guests</th><th>Location</th></tr>
-      ${upcoming.map(r => `<tr><td>${fdate(r.date)}</td><td>${esc(userById(r.customerId).fullName)}</td><td>${esc(pkgById(r.packageId).name)}</td><td>${r.guests}</td><td>${esc(r.location)}</td></tr>`).join('')}</table></div>` : '<p class="muted">No upcoming approved events.</p>'));
+      <div class="sd-kpis">
+        <div class="sd-kpi g"><span class="ic" aria-hidden="true">⏳</span><b>${nPending}</b><span>Pending requests</span><em>${nPending ? 'Waiting for your answer' : 'Nothing waiting'}</em></div>
+        <div class="sd-kpi o"><span class="ic" aria-hidden="true">✔</span><b>${count('approved')}</b><span>Approved events</span><em>${upcoming.length} coming up</em></div>
+        <div class="sd-kpi t"><span class="ic" aria-hidden="true">🍽</span><b>${activePk}</b><span>Active packages</span><em>${allPk - activePk > 0 ? (allPk - activePk) + ' hidden' : 'All visible'}</em></div>
+        <div class="sd-kpi"><span class="ic" aria-hidden="true">₱</span><b>${peso(revenue)}</b><span>Approved bookings value</span><em>Total of approved reservations</em></div>
+      </div>
+      <div class="sd-charts"><div class="sd-card"><h3>Approved events by month</h3><p class="sd-sub">Next 6 months</p>${monthChart}</div></div>
+      <h2>Quick actions</h2>
+      <div class="sd-actions">
+        ${act('#/seller/reservations', '📋', 'Reservation requests', 'Accept or decline', nPending || '')}
+        ${act('#/seller/calendar', '📅', 'Calendar', 'See booked and full dates', '')}
+        ${act('#/seller/packages', '🍱', 'Manage packages', allPk + ' package' + (allPk === 1 ? '' : 's'), '')}
+        ${act('#/seller/import', '📝', 'Paste your menu', 'Add many packages fast', '')}
+        ${act('#/seller/prices', '💰', 'Prices &amp; inclusions', 'Edit prices and guests', '')}
+        ${act('#/seller/references', '🖼', 'Category references', refs + ' picture' + (refs === 1 ? '' : 's'), '')}
+        ${act('#/seller/profile', '🏪', 'Business profile', 'Photo, map, QR code', '')}
+      </div>
+      <h2>Upcoming approved events</h2>` + (upcoming.length ? `<div class="sd-events">${upcoming.map(r => { const d = new Date(r.date + 'T00:00:00'); return `<div class="sd-ev"><div class="sd-date"><b>${d.getDate()}</b><small>${d.toLocaleString('en-PH', { month: 'short' })}</small></div><div class="info"><b>${esc(pkgById(r.packageId).name)} · ${r.guests} guests</b><span>${esc(userById(r.customerId).fullName)} · ${esc(r.location)}</span></div>${payBadge(r)}</div>`; }).join('')}</div>` : '<div class="sd-empty">No upcoming approved events.</div>') + '</div>');
   });
 
   // Flowchart box: "Manage Prices and Inclusions (set package details)"
@@ -1230,13 +1576,57 @@
   add(/^\/admin$/, () => {
     if (!requireRole('admin')) return;
     const sellers = adminSellerRows();
-    const pending = sellers.filter(s => s.status === 'pending').length;
-    const revenue = db.reservations.filter(r => r.status === 'approved').reduce((t, r) => t + Number(r.total || 0), 0);
-    view(`<section class="admin-page"><div class="admin-heading"><div><p class="eyebrow">Store operations</p><h1>Seller management</h1><p class="muted">Review, approve, and manage marketplace sellers.</p></div><a class="btn" href="#/admin/sellers">Manage sellers</a></div>${adminNav('dash')}<div class="stats admin-stats">
-      <div class="stat admin-stat"><span class="stat-icon">◈</span><b>${sellers.length}</b><span>Total Sellers</span></div>
-      <div class="stat admin-stat"><span class="stat-icon">◷</span><b>${pending}</b><span>Pending Approvals</span></div>
-      <div class="stat admin-stat"><span class="stat-icon">▤</span><b>${db.reservations.length}</b><span>Total Orders</span></div>
-      <div class="stat admin-stat"><span class="stat-icon">₱</span><b>${peso(revenue)}</b><span>Total Revenue</span></div></div>
+    const sc = st => sellers.filter(x => x.status === st).length;
+    const pendingRows = sellers.filter(x => x.status === 'pending');
+    const pending = pendingRows.length;
+    const res = db.reservations;
+    const approved = res.filter(r => r.status === 'approved');
+    const revenue = approved.reduce((t, r) => t + Number(r.total || 0), 0);
+    const openConcerns = (db.concerns || []).filter(c => c.status === 'open').length;
+    const toVerify = approved.filter(r => r.payStatus === 'submitted').length;
+    const bar = (defs, n) => n ? `<div class="sd-bar" role="img" aria-label="chart">${defs.map(d => d[3] ? `<i style="width:${(d[3] / n * 100).toFixed(1)}%;background:${d[2]}" title="${d[1]}: ${d[3]}"></i>` : '').join('')}</div><div class="sd-legend">${defs.map(d => `<span style="--c:${d[2]}">${d[1]} <b>${d[3]}</b></span>`).join('')}</div>` : '<div class="sd-empty">No data yet.</div>';
+    const sellerDefs = [['approved', 'Approved', '#1b8a4a', sc('approved')], ['pending', 'Waiting for approval', '#E9B949', sc('pending')], ['banned', 'Banned', '#c0392b', sc('banned')]];
+    const resCount = st => res.filter(r => r.status === st).length;
+    const resDefs = [['pending', 'Pending', '#E9B949', resCount('pending')], ['approved', 'Approved', '#1b8a4a', resCount('approved')], ['rejected', 'Declined', '#c0392b', resCount('rejected')], ['cancelled', 'Cancelled', '#8896ab', resCount('cancelled')]];
+    // top caterers by approved value
+    const by = {};
+    approved.forEach(r => { by[r.sellerId] = (by[r.sellerId] || 0) + Number(r.total || 0); });
+    const top = Object.entries(by).map(([id, v]) => [db.sellers.find(x => String(x.id) === id), v]).filter(x => x[0]).sort((a, b) => b[1] - a[1]).slice(0, 5);
+    const maxV = Math.max(1, ...top.map(x => x[1]));
+    const topChart = top.length ? `<div class="sd-rank">${top.map(([sl, v]) => `<div><span>${esc(sl.businessName)}</span><i style="width:${(v / maxV * 100).toFixed(1)}%"></i><b>${peso(v)}</b></div>`).join('')}</div>` : '<div class="sd-empty">Caterers will be ranked here once bookings are approved.</div>';
+    // events per month
+    const now = new Date(), months = [];
+    for (let i = 0; i < 6; i++) { const d = new Date(now.getFullYear(), now.getMonth() + i, 1); months.push({ key: d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0'), label: d.toLocaleString('en-PH', { month: 'short' }) }); }
+    months.forEach(m => { m.n = approved.filter(r => (r.date || '').slice(0, 7) === m.key).length; });
+    const maxM = Math.max(1, ...months.map(m => m.n));
+    const monthChart = months.some(m => m.n) ? `<div class="sd-months">${months.map(m => `<div><b>${m.n || ''}</b><i style="height:${Math.max(3, m.n / maxM * 84)}px"></i>${m.label}</div>`).join('')}</div>` : '<div class="sd-empty">No approved events in the next 6 months.</div>';
+    const recentAct = (db.activity || []).slice().reverse().slice(0, 6);
+    const attention = [];
+    if (pending) attention.push(`<li><span class="ic">⏳</span><div><b>${pending} seller${pending > 1 ? 's' : ''} waiting for approval</b><small>Check the shop, then approve.</small></div><a class="btn sm" href="#/admin/sellers?status=pending">Review</a></li>`);
+    if (openConcerns) attention.push(`<li><span class="ic">💬</span><div><b>${openConcerns} open concern${openConcerns > 1 ? 's' : ''}</b><small>Customers are waiting for a reply.</small></div><a class="btn sm" href="#/admin/concerns">Answer</a></li>`);
+    if (toVerify) attention.push(`<li><span class="ic">🧾</span><div><b>${toVerify} payment proof${toVerify > 1 ? 's' : ''} sent</b><small>Waiting for the caterers to confirm.</small></div><a class="btn alt sm" href="#/admin/reservations">View</a></li>`);
+    const adminNext = pending ? nextStep('⏳', 'Review ' + pending + ' seller' + (pending > 1 ? 's' : ''), 'Open each shop, check it, then approve.', '#/admin/sellers?status=pending', 'Review sellers')
+      : openConcerns ? nextStep('💬', 'Answer ' + openConcerns + ' concern' + (openConcerns > 1 ? 's' : ''), 'Customers and sellers are waiting for a reply.', '#/admin/concerns', 'Open inbox')
+      : nextStep('🎉', 'All caught up', 'No sellers or concerns are waiting.', '', '', true);
+    view(`<section class="admin-page sd"><div class="admin-heading"><div><p class="eyebrow">Store operations</p><h1>Seller management</h1><p class="muted">Review, approve, and manage marketplace sellers.</p></div><a class="btn" href="#/admin/sellers">Manage sellers</a></div>${adminNav('dash')}
+      ${adminNext}
+      <div class="sd-kpis">
+        <div class="sd-kpi"><span class="ic" aria-hidden="true">◈</span><b>${sellers.length}</b><span>Total Sellers</span><em>${sc('approved')} live in the marketplace</em></div>
+        <div class="sd-kpi g"><span class="ic" aria-hidden="true">◷</span><b>${pending}</b><span>Pending Approvals</span><em>${pending ? 'Needs your decision' : 'All caught up'}</em></div>
+        <div class="sd-kpi t"><span class="ic" aria-hidden="true">▤</span><b>${res.length}</b><span>Total Orders</span><em>${resCount('pending')} still pending</em></div>
+        <div class="sd-kpi o"><span class="ic" aria-hidden="true">₱</span><b>${peso(revenue)}</b><span>Total Revenue</span><em>Approved reservations</em></div>
+      </div>
+      <div class="sd-top">
+        <div class="sd-card"><h3>Needs your attention</h3><p class="sd-sub">${attention.length ? 'Things waiting for you today.' : 'Nothing is waiting. Good job!'}</p>
+          ${attention.length ? `<ul class="sd-todo">${attention.join('')}</ul>` : '<div class="sd-empty">No pending approvals, concerns or payments.</div>'}</div>
+        <div class="sd-card"><h3>Sellers</h3><p class="sd-sub">By account status</p>${bar(sellerDefs, sellers.length)}
+          <h3 style="margin-top:16px">Reservations</h3><p class="sd-sub">By status</p>${bar(resDefs, res.length)}</div>
+      </div>
+      <div class="sd-charts">
+        <div class="sd-card"><h3>Approved events by month</h3><p class="sd-sub">Next 6 months</p>${monthChart}</div>
+        <div class="sd-card"><h3>Top caterers</h3><p class="sd-sub">By approved bookings value</p>${topChart}</div>
+        <div class="sd-card"><h3>Recent activity</h3><p class="sd-sub">Latest actions in the marketplace</p>${recentAct.length ? `<ul class="sd-feed">${recentAct.map(a => `<li><b>${esc(a.actor || 'System')}</b> ${esc(a.text)}<small>${esc(fdatetime(a.at))}</small></li>`).join('')}</ul>` : '<div class="sd-empty">No activity yet.</div>'}</div>
+      </div>
       <div class="admin-section-head"><div><h2>Recent sellers</h2><p class="muted small">Your latest seller accounts at a glance.</p></div><a class="btn alt sm" href="#/admin/sellers">View all sellers</a></div>
       <div class="tablewrap admin-table"><table><tr><th>Shop Name</th><th>Email</th><th>Status</th><th>Joined Date</th><th>Actions</th></tr>
       ${sellers.slice().reverse().slice(0, 5).map(adminSellerRow).join('')}</table></div></section>`);
@@ -1436,6 +1826,7 @@
       const p = publicPackages().find(x => x.id === Number(form.dataset.id));
       if (!p) { flash('That package is no longer available.', 'error'); return go('#/packages'); }
       const s = sellerById(p.sellerId), guests = parseInt(d.guests, 10), errors = [];
+      if (s.isOpen === false) { flash('This caterer is not taking new reservations right now.', 'error'); return go('#/packages'); }
       if (!d.date || d.date <= todayStr()) errors.push('The event date must be in the future.');
       if (!(guests >= p.minGuests && guests <= p.maxGuests)) errors.push(`Number of guests must be between ${p.minGuests} and ${p.maxGuests} for this package.`);
       if (!d.eventType.trim()) errors.push('Event type is required.');
@@ -1446,6 +1837,17 @@
       if (error) { flash(error.message, 'error'); return route(); }
       logAct(`Submitted reservation #${newId}: ${p.name} (${s.businessName}) on ${d.date}, ${guests} guests`);
       flash('Reservation request submitted. The caterer will review it shortly.', 'success');
+      go('#/my-reservations');
+    },
+
+    async review(d, form) {
+      if (!requireRole('customer')) return;
+      const rating = parseInt(d.rating, 10), comment = String(d.comment || '').trim().slice(0, 300);
+      if (!(rating >= 1 && rating <= 5)) { flash('Please choose a rating from 1 to 5.', 'error'); return route(); }
+      const { error } = await sb.rpc('create_review', { p_reservation: Number(form.dataset.id), p_rating: rating, p_comment: comment });
+      if (error) { flash(/create_review|function/i.test(error.message) ? 'Reviews are not set up yet. Run 7-open-closed-calendar-reviews.sql in Supabase first.' : error.message, 'error'); return route(); }
+      logAct('Rated reservation #' + form.dataset.id + ': ' + rating + ' stars');
+      await reload('Thank you! Your review was sent.');
       go('#/my-reservations');
     },
 
@@ -1626,6 +2028,17 @@
       if (error) { flash(error.message, 'error'); await refreshAll(); return route(); }
       logAct(`Cancelled reservation #${r.id}`);
       await reload('Reservation cancelled.');
+    },
+
+    async 'toggle-open'() {
+      if (!requireRole('seller')) return;
+      const s = mySeller();
+      if (!s) return;
+      const open = s.isOpen === false;
+      const r = await sb.from('sellers').update({ is_open: open }).eq('id', s.id);
+      if (r.error) return reload('Run 7-open-closed-calendar-reviews.sql in Supabase first, then try again.', 'error');
+      logAct((open ? 'Opened' : 'Closed') + ' shop for bookings');
+      await reload(open ? 'Your shop is open for bookings.' : 'Your shop is closed for new bookings. Existing reservations are not affected.');
     },
 
     async 'toggle-pkg'(id) {

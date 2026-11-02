@@ -1233,7 +1233,44 @@
       const h0 = location.hash;
       const poll = setInterval(async () => { if (!document.getElementById('calclock') || location.hash !== h0) return clearInterval(poll); try { await refreshAll(); if (location.hash === h0 && document.getElementById('calclock')) route(); } catch (e) { /* try again next time */ } }, 30000);
     }, 0);
-    view(`<div class="cal"><h1>Reservation calendar</h1>
+    // Seasonal theme for the month being shown (Philippine seasons and celebrations).
+    const SEASONS = {
+      0: ['newyear', '✨ Happy New Year', 'Fresh start: plan your first events of the year.', ['✨', '🎆', '🎉', '⭐']],
+      1: ['love', '💖 Love month', 'Weddings and anniversaries are busy this month.', ['💖', '💗', '🌹', '💞']],
+      2: ['summer', '☀️ Summer is coming', 'Graduations and outings: expect more bookings.', ['☀️', '🌴', '🍉', '🌊']],
+      3: ['summer', '☀️ Summer season', 'Hot days, fiestas and reunions.', ['☀️', '🌴', '🍉', '🌊']],
+      4: ['flowers', '🌸 Flores de Mayo & fiesta month', 'Santacruzan and town fiestas keep caterers busy.', ['🌸', '🌼', '🌺', '🦋']],
+      5: ['rain', '🌧️ Rainy season begins', 'Remind customers about covered venues.', ['💧', '☔', '🌧️', '💦']],
+      6: ['rain', '🌧️ Rainy season', 'Plan indoor-friendly menus and venues.', ['💧', '☔', '🌧️', '💦']],
+      7: ['rain', '🌧️ Rainy season', 'Plan indoor-friendly menus and venues.', ['💧', '☔', '🌧️', '💦']],
+      8: ['ber', '🏮 "Ber" months start', 'Christmas party bookings begin to come in.', ['🏮', '⭐', '🎶', '🎄']],
+      9: ['halloween', '🎃 Halloween season', 'Costume parties and trick-or-treat events.', ['🎃', '🦇', '👻', '🕸️']],
+      10: ['christmas', '🎄 Christmas season', 'Parol and Christmas parties: book early.', ['❄️', '⭐', '🎄', '🏮']],
+      11: ['christmas', '🎄 Merry Christmas', 'Noche Buena, reunions and year-end parties.', ['❄️', '🎁', '🎄', '⭐']]
+    };
+    const sea = SEASONS[m];
+    const fx = Array.from({ length: 22 }, (_, i) => `<i style="left:${(i * 37 + 11) % 100}%;animation-delay:${-((i * 53) % 17)}s;animation-duration:${9 + (i * 7) % 9}s;font-size:${14 + (i * 5) % 14}px">${sea[3][i % sea[3].length]}</i>`).join('');
+    const inMonth = mine.filter(r => r.date.startsWith(key(y, m)));
+    const apM = inMonth.filter(r => r.status === 'approved'), peM = inMonth.filter(r => r.status === 'pending');
+    const perDay = days_ => days_.map(ds => mine.filter(r => r.date === ds && r.status === 'approved').length);
+    const dayKeys = Array.from({ length: days }, (_, i) => key(y, m) + '-' + String(i + 1).padStart(2, '0'));
+    const counts = perDay(dayKeys), bookedDays = counts.filter(c => c > 0).length, fullDays = counts.filter(c => c >= s.maxPerDay).length;
+    const futureFree = dayKeys.filter((ds, i) => ds >= todayStr() && counts[i] < s.maxPerDay).length;
+    const pctBooked = Math.round(bookedDays / days * 100), revM = apM.reduce((a, r) => a + r.total, 0);
+    const maxC = Math.max(1, s.maxPerDay, ...counts);
+    const R = 30, C = 2 * Math.PI * R;
+    const info = `<div class="cal-info">
+      <div class="ci ring"><svg viewBox="0 0 80 80" width="76" height="76" aria-hidden="true"><circle cx="40" cy="40" r="${R}" fill="none" stroke="#e8e0cc" stroke-width="9"/><circle cx="40" cy="40" r="${R}" fill="none" stroke="#0B2A5B" stroke-width="9" stroke-linecap="round" stroke-dasharray="${(C * pctBooked / 100).toFixed(1)} ${C.toFixed(1)}" transform="rotate(-90 40 40)" class="ci-arc"/><text x="40" y="45" text-anchor="middle" font-size="17" font-weight="800" fill="#0B2A5B">${pctBooked}%</text></svg><span>of days have an event</span></div>
+      <div class="ci"><b>${apM.length}</b><span>approved events</span></div>
+      <div class="ci hot"><b>${peM.length}</b><span>pending requests</span></div>
+      <div class="ci ${fullDays ? 'bad' : ''}"><b>${fullDays}</b><span>full days</span></div>
+      <div class="ci ok"><b>${futureFree}</b><span>days still open</span></div>
+      <div class="ci wide"><b>${peso(revM)}</b><span>approved bookings this month</span></div>
+      <div class="ci strip" title="Events per day"><div class="bars">${counts.map((c, i) => `<i class="${c >= s.maxPerDay ? 'f' : c ? 'p' : ''} ${dayKeys[i] === todayStr() ? 't' : ''}" style="height:${c ? Math.max(30, c / maxC * 100) : 12}%"></i>`).join('')}</div><span>Events per day</span></div>
+    </div>`;
+    view(`<div class="cal" data-season="${sea[0]}"><div class="cal-fx" aria-hidden="true">${fx}</div><div class="cal-body"><h1>Reservation calendar</h1>
+      <div class="cal-season"><b>${sea[1]}</b><span>${sea[2]}</span></div>
+      ${info}
       <p class="cal-clock"><span class="livedot"></span><b id="calclock"></b> <span class="small muted">· updates by itself</span></p>
       <p class="muted">Each day can take up to <b>${s.maxPerDay}</b> approved event${s.maxPerDay === 1 ? '' : 's'}. Full days cannot be booked again. Change this number in your <a href="#/seller/profile">business profile</a>.</p>
       <p class="cal-nav"><a class="btn alt sm" href="#/seller/calendar?m=${prev}">‹ Previous</a> <b>${first.toLocaleString('en-PH', { month: 'long' })} ${y}</b> <a class="btn alt sm" href="#/seller/calendar?m=${nextM}">Next ›</a> <a class="btn sm" href="#/seller/calendar">Today</a></p>
@@ -1262,9 +1299,36 @@
         .livedot{width:9px;height:9px;border-radius:50%;background:#1b8a4a;animation:livepulse 1.8s infinite}
         .cal-det{background:#fff;border:1px solid #e3dcc9;border-radius:14px;padding:12px 16px;margin:14px 0}.cal-det.hidden{display:none}
         .cal-row{padding:8px 0;border-bottom:1px dashed #e8e0cc}.cal-row:last-child{border:0}
+        .cal{position:relative;border-radius:18px}.cal-body{position:relative;z-index:1}
+        .cal-fx{position:absolute;inset:0;overflow:hidden;pointer-events:none;z-index:0;border-radius:18px}
+        .cal-fx i{position:absolute;top:-8%;font-style:normal;opacity:.55;animation:calfall linear infinite;will-change:transform}
+        @keyframes calfall{0%{transform:translateY(-6vh) translateX(0) rotate(0)}50%{transform:translateY(55vh) translateX(18px) rotate(180deg)}100%{transform:translateY(115vh) translateX(-12px) rotate(360deg)}}
+        .cal[data-season=halloween] .cal-fx i,.cal[data-season=newyear] .cal-fx i,.cal[data-season=love] .cal-fx i,.cal[data-season=flowers] .cal-fx i{animation-name:calfloat}
+        @keyframes calfloat{0%{transform:translateY(110vh) translateX(0) rotate(-10deg)}50%{transform:translateY(50vh) translateX(26px) rotate(12deg)}100%{transform:translateY(-12vh) translateX(-18px) rotate(-8deg)}}
+        .cal[data-season=rain] .cal-fx i{animation-duration:3.5s!important;opacity:.4}
+        .cal-season{display:flex;flex-wrap:wrap;gap:4px 14px;align-items:center;padding:10px 16px;border-radius:14px;margin:10px 0;color:#fff;background:linear-gradient(110deg,#0B2A5B,#1B8A9C);box-shadow:0 10px 24px -14px rgba(11,42,91,.7)}
+        .cal-season b{font-size:1.05rem}.cal-season span{font-size:.9rem;opacity:.92}
+        .cal[data-season=halloween] .cal-season{background:linear-gradient(110deg,#2b1055,#e8590c)}
+        .cal[data-season=christmas] .cal-season,.cal[data-season=ber] .cal-season{background:linear-gradient(110deg,#0b5d3b,#b3202a)}
+        .cal[data-season=love] .cal-season{background:linear-gradient(110deg,#b3204f,#f06595)}
+        .cal[data-season=summer] .cal-season{background:linear-gradient(110deg,#f59f00,#ff6b35)}
+        .cal[data-season=flowers] .cal-season{background:linear-gradient(110deg,#c2255c,#e599f7)}
+        .cal[data-season=rain] .cal-season{background:linear-gradient(110deg,#1c4e80,#4a7fb5)}
+        .cal[data-season=newyear] .cal-season{background:linear-gradient(110deg,#5f3dc4,#E9B949)}
+        .cal[data-season=halloween] .cal-c{border-color:#f0b27a}.cal[data-season=christmas] .cal-c,.cal[data-season=ber] .cal-c{border-color:#b7d8c4}
+        .cal-info{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px;margin:10px 0 14px}
+        .ci{background:rgba(255,255,255,.92);border:1px solid #e3dcc9;border-radius:14px;padding:10px 12px;display:flex;flex-direction:column;justify-content:center;gap:2px;animation:viewin .5s both}
+        .ci b{font-size:1.5rem;color:#0B2A5B;line-height:1.1}.ci span{font-size:.78rem;color:#5a6a82}
+        .ci.hot b{color:#b8860b}.ci.ok b{color:#1b8a4a}.ci.bad b{color:#c0392b}
+        .ci.ring{grid-row:span 2;align-items:center;text-align:center}.ci.wide{grid-column:span 2}.ci.strip{grid-column:span 2}
+        .ci .ci-arc{transition:stroke-dasharray 1s ease;animation:ringdraw 1.1s ease-out both}
+        .bars{display:flex;align-items:flex-end;gap:2px;height:46px}.bars i{flex:1;background:#c3d0e6;border-radius:3px 3px 0 0;min-width:3px;transition:height .6s}
+        .bars i.p{background:#E9B949}.bars i.f{background:#c0392b}.bars i.t{outline:2px solid #0B2A5B}
+        @media(max-width:760px){.cal-info{grid-template-columns:repeat(2,minmax(0,1fr))}.ci.ring{grid-row:auto}.ci.wide,.ci.strip{grid-column:span 2}}
+        @media(prefers-reduced-motion:reduce){.cal-fx i{animation:none!important;opacity:.25}.ci{animation:none}}
         .rtag{color:#b8860b;white-space:nowrap}.rtag small{color:#5a6a82}
         @media(max-width:640px){.cal-c{min-height:64px;padding:3px;font-size:.68rem}.cal-e,.cal-p{font-size:.65rem}}
-      </style></div>`);
+      </style></div></div>`);
   });
 
   add(/^\/seller$/, () => {

@@ -29,6 +29,7 @@
   // Supabase on every page change and after every save.
   let db = { users: [], sellers: [], packages: [], reservations: [], notifications: [], activity: [], references: [], concerns: [] };
   let session = null; // the logged-in Supabase session, or null when nobody is logged in
+  let chatUnread = 0; // unread chat messages (the red number on Messages)
 
   // The database identifies people with long unique IDs (uuid); the pages use small numbers.
   // This keeps one stable number for every uuid.
@@ -95,6 +96,13 @@
     });
     next.reviews = reviewRows.map(v => ({ id: v.id, reservationId: v.reservation_id, sellerId: v.seller_id, rating: v.rating, comment: v.comment || '', name: v.customer_name || 'Customer', createdAt: v.created_at }));
     db = next;
+    await refreshChatBadge();
+  }
+
+  // Unread chat messages. If the chat SQL (8-chat.sql) was not run yet, this quietly stays 0.
+  async function refreshChatBadge() {
+    chatUnread = 0;
+    if (session && session.user) { try { const c = await sb.rpc('chat_unread_count'); if (!c.error) chatUnread = Number(c.data) || 0; } catch (e) { /* ignore */ } }
   }
 
   // A save that must change at least one row (the database quietly skips rows you may not touch).
@@ -388,17 +396,25 @@
     window.scrollTo(0, 0);
   }
 
+  // Password field with a show/hide eye, and the password rule used by Sign Up and Reset password
+  const pwField = (name, attrs = '') => `<div class="pw"><input type="password" name="${name}" ${attrs}><button type="button" class="eye" data-eye aria-label="Show password" title="Show or hide password">&#128065;</button></div>`;
+  const pwRuleOk = p => typeof p === 'string' && p.length >= 6 && p.length <= 12 && /[A-Z]/.test(p) && /[a-z]/.test(p) && /[0-9]/.test(p);
+  const PW_RULE = 'Password must be 6 to 12 characters with an uppercase letter, a lowercase letter and a number.';
+  let recovering = false;
+
   function renderNav() {
     const u = me();
     const unread = u ? db.notifications.filter(n => n.userId === u.id && !n.read).length : 0;
-    let h = `<a href="#/packages">Packages</a><a href="#/sellers">Caterers</a><a href="#/help">Help</a>`;
+    let h = `<a href="#/packages">Packages</a><a href="#/sellers">Caterers</a>`;
     if (u) {
       const home = { admin: ['#/admin', 'Admin'], seller: ['#/seller', 'My Business'], customer: ['#/my-reservations', 'My Reservations'] }[u.role];
       h += `<a href="${home[0]}">${home[1]}</a>`;
+      if (u.role !== 'admin') h += `<a href="#/messages">Messages${chatUnread ? `<span class="dot">${chatUnread}</span>` : ''}</a>`;
       h += `<a href="#/notifications">Notifications${unread ? `<span class="dot">${unread}</span>` : ''}</a>`;
+      h += `<a href="#/help">Help</a>`;
       h += `<button class="link" data-act="logout">Logout (${esc(u.username)})</button>`;
     } else {
-      h += `<a href="#/login">Login</a><a class="btn sm" href="#/register">Register</a>`;
+      h += `<a href="#/help">Help</a><a href="#/login">Login</a><a class="btn sm" href="#/register">Register</a>`;
     }
     $('#nav').innerHTML = h;
     const foot = $('footer');
@@ -445,14 +461,36 @@
     view(`<div class="card form-card"><h1>Log in</h1>
       <form class="stack" data-form="login">
         <label>Account type</label><select name="role"><option value="customer">Customer</option><option value="seller">Seller</option><option value="admin">Administrator</option></select>
-        <label>Username</label><input name="username" required autofocus autocomplete="username">
-        <label>Password</label><input name="password" type="password" required autocomplete="current-password">
+        <label>Username</label><input name="username" required autofocus autocomplete="username" value="${esc((() => { try { return localStorage.getItem('nc_user') || ''; } catch (e) { return ''; } })())}">
+        <label>Password</label>${pwField('password', 'required autocomplete="current-password"')}
+        <div class="loginrow"><label class="remember"><input type="checkbox" name="remember" ${(() => { try { return localStorage.getItem('nc_user') ? 'checked' : ''; } catch (e) { return ''; } })()}> Remember me</label><a href="#/forgot">Forgot password?</a></div>
         <p><button class="btn" type="submit">Log in</button></p>
       </form>
       <p class="small muted">No account yet? <a href="#/register">Register as a customer or seller</a>. Administrator accounts are created by the system owner.</p></div>`);
   });
 
   function homeFor(u) { return { admin: '#/admin', seller: '#/seller', customer: '#/my-reservations' }[u.role]; }
+
+  add(/^\/forgot$/, () => {
+    if (me()) return go(homeFor(me()));
+    view(`<div class="card form-card"><h1>Forgot your password?</h1>
+      <p class="muted">Enter your username or email. We will send a link to the email of that account so you can choose a new password.</p>
+      <form class="stack" data-form="forgot">
+        <label>Username or email</label><input name="who" required autofocus autocomplete="username">
+        <p><button class="btn" type="submit">Send reset link</button> <a class="btn alt" href="#/login">Back to log in</a></p>
+      </form></div>`);
+  });
+
+  add(/^\/reset-password$/, () => {
+    if (!session) return view(`<div class="card form-card"><h1>Reset password</h1><p class="muted">Open the reset link from your email first. If the link expired, ask for a new one.</p><p><a class="btn" href="#/forgot">Send a new link</a></p></div>`);
+    view(`<div class="card form-card"><h1>Choose a new password</h1>
+      <form class="stack" data-form="resetpw">
+        <label>New password</label>${pwField('password', 'required minlength="6" maxlength="12" autocomplete="new-password"')}
+        <label>Confirm new password</label>${pwField('confirm', 'required maxlength="12" autocomplete="new-password"')}
+        <p class="small muted pwhint">6 to 12 characters with an uppercase letter, a lowercase letter and a number. Example: <b>Naval2026</b></p>
+        <p><button class="btn" type="submit">Save new password</button></p>
+      </form></div>`);
+  });
 
   add(/^\/register$/, () => {
     if (me()) return go(homeFor(me()));
@@ -476,9 +514,10 @@
           <label>Landmark (optional)</label><input name="landmark" placeholder="e.g. near the church, beside the store">
         </div>
         <div class="row">
-          <div><label>Password</label><input type="password" name="password" required minlength="6" autocomplete="new-password"></div>
-          <div><label>Confirm password</label><input type="password" name="confirm" required autocomplete="new-password"></div>
+          <div><label>Password</label>${pwField('password', 'required minlength="6" maxlength="12" autocomplete="new-password"')}</div>
+          <div><label>Confirm password</label>${pwField('confirm', 'required maxlength="12" autocomplete="new-password"')}</div>
         </div>
+        <p class="small muted pwhint">Create a password with <b>6 to 12 characters</b>: at least one <b>uppercase letter</b>, one <b>lowercase letter</b> and one <b>number</b>. Example: <b>Naval2026</b></p>
         <p class="small muted">By registering, you agree to the <a href="#/terms">Terms and Conditions</a> and the <a href="#/privacy">Privacy Policy</a>.</p>
         <p><button class="btn" type="submit">Register</button></p>
       </form>
@@ -569,7 +608,8 @@
           </ul>
           ${s.description ? `<p>${esc(s.description)}</p>` : ''}
           <p><a class="btn sm" href="${esc(mapOpenUrl(s))}" target="_blank" rel="noopener">Open in Google Maps</a>
-             <a class="btn alt sm" href="${esc(mapDirUrl(s))}" target="_blank" rel="noopener">Get directions</a></p>
+             <a class="btn alt sm" href="${esc(mapDirUrl(s))}" target="_blank" rel="noopener">Get directions</a>
+             ${(!me() || me().role === 'customer') && !own ? `<a class="btn sm" href="${me() ? '#/chat?seller=' + s.id : '#/login'}">💬 Message this caterer</a>` : ''}</p>
         </div>
         <div class="mapbox"><iframe title="Map of ${esc(s.businessName)}" src="${esc(mapEmbedSrc(s))}" loading="lazy" allowfullscreen referrerpolicy="no-referrer-when-downgrade"></iframe></div>
       </div>
@@ -602,7 +642,7 @@
         <div><label class="small">Event type</label><input name="event_type" value="${esc(f.ev)}" placeholder="Wedding, Birthday…"></div>
         <div><label class="small">Max price (₱)</label><input type="number" min="0" name="max_price" value="${esc(f.max)}"></div>
         <div><label class="small">Guests</label><input type="number" min="1" name="guests" value="${esc(f.guests)}"></div>
-        <div><label class="small">Sort by</label><select name="sort">${opt('price_asc', 'Price: low to high')}${opt('price_desc', 'Price: high to low')}${opt('capacity', 'Largest capacity')}${opt('name', 'Name')}</select></div>
+        <div><label class="small">Sort by</label><select name="sort">${opt('price_asc', 'Price: low to high')}${opt('price_desc', 'Price: high to low')}${opt('capacity', 'Largest capacity')}${opt('name', 'Package name (A to Z)')}</select></div>
         <div><button class="btn" type="submit">Apply</button></div>
       </form>
       ${list.length ? `<div class="grid">${list.map(p => pkgCard(p, true)).join('')}</div>
@@ -720,7 +760,7 @@
       const cancel = ['pending', 'approved'].includes(r.status) && r.payStatus !== 'received' ? `<button class="btn warn sm" data-act="cancel" data-id="${r.id}">Cancel</button>` : '';
       return `<div class="cr-card ${need ? 'need' : ''}">
         <div class="cr-head"><div class="cr-date"><b>${d.getDate()}</b><small>${d.toLocaleString('en-PH', { month: 'short' })} ${d.getFullYear()}</small></div>
-          <div class="cr-info"><h3>${esc(p.name)}</h3><p>${esc(s.businessName)}${s.phone ? ' · ' + esc(s.phone) : ''}</p><p>${esc(r.eventType)} · ${r.guests} guests · ${esc(r.location)}</p></div>
+          <div class="cr-info"><h3>${esc(p.name)}</h3><p>${esc(s.businessName)}${s.phone ? ' · ' + esc(s.phone) : ''}</p><p>${esc(r.eventType)} · ${r.guests} guests · ${esc(r.location)}</p><p><a class="btn alt sm" href="#/chat?seller=${r.sellerId}">💬 Message caterer</a></p></div>
           <div class="cr-total"><b>${peso(r.total)}</b><span>Reservation #${r.id}</span><br>${badge(r.status)}</div></div>
         <ol class="cr-steps">${st.map(x => `<li class="${x[1]}"><i>${x[2]}</i>${x[0]}</li>`).join('')}</ol>
         ${r.sellerNote ? `<div class="cr-note">Note from the caterer: ${esc(r.sellerNote)}</div>` : ''}
@@ -737,7 +777,7 @@
         <span class="cr-chip"><b>${waiting}</b> waiting for the caterer</span>
         <span class="cr-chip ${toPay ? 'hot' : ''}"><b>${toPay}</b> to pay</span>
         <span class="cr-chip"><b>${paid}</b> paid</span></div>
-        <div class="cr-list">${rows.map(card).join('')}</div>` : `<p class="muted">You have no reservations yet.</p><a class="btn" href="#/packages">Browse packages</a>`) + '</div>');
+        <div class="cr-list">${rows.map(card).join('')}</div>` : `<p class="muted">You have no reservations yet.</p>`) + '</div>');
   });
 
   add(/^\/review\/(\d+)$/, ([id]) => {
@@ -1073,6 +1113,95 @@
     renderNav();
   });
 
+
+  /* ---------- Chat between a customer and a caterer ---------- */
+  const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  const custUuid = n => { for (const [k, v] of uidMap) if (v === n) return k; return ''; };
+  let chatReload = null; // reloads the open conversation (used right after sending)
+  setInterval(() => { if (session && me()) refreshChatBadge().then(renderNav); }, 30000);
+
+  add(/^\/messages$/, () => {
+    const u = me();
+    if (!u) { flash('Please log in to continue.', 'error'); return go('#/login'); }
+    if (u.role === 'admin') return go('#/admin');
+    view(`<h1>Messages</h1><p class="muted">Loading your conversations...</p>`);
+    sb.rpc('chat_threads').then(({ data, error }) => {
+      if (location.hash !== '#/messages') return;
+      if (error) return view(`<h1>Messages</h1><div class="notice">Chat is not ready yet. Run <b>8-chat.sql</b> once in Supabase (SQL Editor).</div>`);
+      const rows = data || [];
+      view(`<h1>Messages</h1>
+        <p class="muted">${u.role === 'customer' ? 'Chat privately with a caterer before or after you book. You can also send pictures, like a venue or a menu idea.' : 'Chat privately with your customers. Customers can also send you pictures.'}</p>
+        ${rows.length ? `<div class="convlist">${rows.map(t => {
+          const href = u.role === 'customer' ? `#/chat?seller=${t.seller_id}` : `#/chat?customer=${t.customer_id}`;
+          const last = t.last_body ? t.last_body.slice(0, 70) : '📷 Picture';
+          return `<a class="conv ${t.unread > 0 ? 'unread' : ''}" href="${href}"><span class="av">${esc((t.other_name || '?').trim().charAt(0).toUpperCase())}</span>
+            <span class="cv-t"><b>${esc(t.other_name)}</b><small>${t.last_mine ? 'You: ' : ''}${esc(last)}</small></span>
+            <span class="cv-r"><small>${esc(fdatetime(t.last_at))}</small>${t.unread > 0 ? `<span class="dot">${t.unread}</span>` : ''}</span></a>`;
+        }).join('')}</div>`
+        : `<div class="card"><p>You have no conversations yet.</p>${u.role === 'customer' ? '<a class="btn" href="#/sellers">Find a caterer</a>' : '<p class="muted small">A customer can message you from your business page, or you can use "Message customer" on the Reservation requests page.</p>'}</div>`}`);
+    });
+  });
+
+  add(/^\/chat$/, (_, q) => {
+    const u = me();
+    if (!u) { flash('Please log in to continue.', 'error'); return go('#/login'); }
+    if (!['customer', 'seller'].includes(u.role)) return go('#/');
+    let sid, cid;
+    if (u.role === 'customer') { sid = Number(q.get('seller')); cid = session.user.id; }
+    else { const ms = mySeller(); if (!ms) return go('#/seller'); sid = ms.id; cid = q.get('customer') || ''; }
+    if (!sid || !UUID_RE.test(cid)) return go('#/messages');
+    const h0 = location.hash, mine = session.user.id, isCust = u.role === 'customer';
+    view(`<p><a href="#/messages">&larr; All messages</a></p>
+      <div class="chatbox card">
+        <div class="chat-head"><span class="av" id="chAv">…</span><div><b id="chName">Loading...</b><small class="muted">${isCust ? 'Caterer' : 'Customer'}</small></div>
+          ${isCust ? `<a class="btn sm alt" style="margin-left:auto" href="#/business/${sid}">View shop</a>` : ''}</div>
+        <div class="chat-body" id="chatBody"><p class="muted chat-empty">Loading...</p></div>
+        <img id="chatPrev" class="chat-prevthumb hidden" alt="Picture to send">
+        <form class="chat-form" data-form="chat-send" data-seller="${sid}" data-customer="${esc(cid)}">
+          <label class="chat-pic" title="Send a picture">📷<input type="file" id="chatFile" accept="image/*"></label>
+          <textarea name="body" id="chatText" rows="1" maxlength="1000" placeholder="Write a message..."></textarea>
+          <input type="hidden" name="image" id="chatData">
+          <button class="btn" type="submit">Send</button>
+        </form>
+        <p class="small muted chat-hint">Pictures are shrunk before sending. <button type="button" class="link hidden" id="chatPrevX">Remove the picture</button> Please keep the chat respectful.</p>
+      </div>`);
+    const body = $('#chatBody');
+    let shown = null;
+    $('#chatText').addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); e.target.form.requestSubmit(); } });
+    $('#chatPrevX').addEventListener('click', () => { $('#chatFile').value = ''; $('#chatData').value = ''; $('#chatPrev').classList.add('hidden'); $('#chatPrevX').classList.add('hidden'); });
+    const draw = rows => {
+      const day = d => new Date(d).toLocaleDateString('en-CA', { timeZone: 'Asia/Manila' });
+      let html = '', last = '';
+      rows.forEach(m => {
+        const d = day(m.created_at);
+        if (d !== last) { last = d; html += `<div class="chat-day">${d === todayStr() ? 'Today' : esc(fdate(d))}</div>`; }
+        const img = typeof m.image === 'string' && m.image.startsWith(STORE_URL) ? m.image : '';
+        html += `<div class="msg ${m.sender_id === mine ? 'me' : 'them'}">${img ? `<a href="${esc(img)}" target="_blank" rel="noopener"><img src="${esc(img)}" alt="Picture sent in chat" loading="lazy"></a>` : ''}${m.body ? `<p>${esc(m.body).replace(/\n/g, '<br>')}</p>` : ''}<small>${esc(new Date(m.created_at).toLocaleTimeString('en-PH', { timeZone: 'Asia/Manila', hour: 'numeric', minute: '2-digit' }))}</small></div>`;
+      });
+      if (!rows.length) html = '<p class="muted chat-empty">No messages yet. Say hello and ask your question.</p>';
+      if (html === shown) return;
+      const down = shown === null || body.scrollHeight - body.scrollTop - body.clientHeight < 80;
+      shown = html; body.innerHTML = html;
+      if (down) body.scrollTop = body.scrollHeight;
+    };
+    const load = async () => {
+      if (location.hash !== h0 || !document.getElementById('chatBody')) return false;
+      const { data, error } = await sb.from('messages').select('*').eq('seller_id', sid).eq('customer_id', cid).order('id', { ascending: true }).limit(300);
+      if (error) { body.innerHTML = `<p class="muted chat-empty">Chat is not ready yet. Run <b>8-chat.sql</b> once in Supabase.</p>`; return false; }
+      draw(data || []);
+      if ((data || []).some(m => m.sender_id !== mine && !m.is_read)) { sb.rpc('mark_chat_read', { p_seller: sid, p_customer: cid }).then(() => refreshChatBadge().then(renderNav), () => {}); }
+      return true;
+    };
+    chatReload = load;
+    sb.rpc('chat_peer', { p_seller: sid, p_customer: cid }).then(({ data, error }) => {
+      if (location.hash !== h0) return;
+      if (error) return view(errorPage(403, error.message));
+      $('#chName').textContent = data || ''; $('#chAv').textContent = String(data || '?').trim().charAt(0).toUpperCase();
+      load();
+      const iv = setInterval(() => { if (location.hash !== h0 || !document.getElementById('chatBody')) return clearInterval(iv); load(); }, 5000);
+    });
+  });
+
   /* ---------- 7. Seller pages (always scoped to the logged-in seller's own business) ---------- */
   // Soft glow background, gentle movement and a "next step" bar. Works with any style.css; switched off when the visitor prefers less motion.
   (function addMotionStyles() {
@@ -1271,13 +1400,13 @@
     view(`<div class="cal" data-season="${sea[0]}"><div class="cal-fx" aria-hidden="true">${fx}</div><div class="cal-body"><h1>Reservation calendar</h1>
       <div class="cal-season"><b>${sea[1]}</b><span>${sea[2]}</span></div>
       ${info}
-      <p class="cal-clock"><span class="livedot"></span><b id="calclock"></b> <span class="small muted">· updates by itself</span></p>
+      <p class="cal-clock"><span class="livedot"></span><b id="calclock"></b></p>
       <p class="muted">Each day can take up to <b>${s.maxPerDay}</b> approved event${s.maxPerDay === 1 ? '' : 's'}. Full days cannot be booked again. Change this number in your <a href="#/seller/profile">business profile</a>.</p>
       <p class="cal-nav"><a class="btn alt sm" href="#/seller/calendar?m=${prev}">‹ Previous</a> <b>${first.toLocaleString('en-PH', { month: 'long' })} ${y}</b> <a class="btn alt sm" href="#/seller/calendar?m=${nextM}">Next ›</a> <a class="btn sm" href="#/seller/calendar">Today</a></p>
       <div class="cal-grid">${['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map(x => `<div class="cal-h">${x}</div>`).join('')}${cells}</div>
       ${days_.map(detail).join('')}
       ${upc.length ? `<h3>Next events</h3><div class="cal-up">${upc.map(r => { const c = userById(r.customerId) || {}, d = new Date(r.date + 'T00:00:00'); return `<div class="cal-row"><b>${esc(fdate(r.date))}</b> · ${esc(c.fullName || 'Customer')}<br><span class="small muted">${esc(pkgById(r.packageId).name)} · ${esc(r.eventType)} · ${r.guests} guests</span></div>`; }).join('')}</div>` : ''}
-      <p class="small muted"><span class="cal-key full"></span> Full &nbsp; <span class="cal-key part"></span> Has booking &nbsp; <span class="cal-key pend"></span> Pending requests</p>
+      <p class="cal-legend small"><button type="button" class="lg" data-lg="full"><span class="cal-key full"></span> Full</button><button type="button" class="lg" data-lg="part"><span class="cal-key part"></span> Has booking</button><button type="button" class="lg" data-lg="pend"><span class="cal-key pend"></span> Pending requests</button><span class="muted" id="lgmsg">Tap one to highlight those days.</span></p>
       <style>
         .cal-nav{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
         .cal-grid{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:6px}
@@ -1292,6 +1421,7 @@
         .cal-key{display:inline-block;width:12px;height:12px;border-radius:3px;vertical-align:middle;border:1px solid #c9bfa3}
         .cal-key.full{background:#fde8e5;border-color:#c0392b}.cal-key.part{background:#fff8e4;border-color:#E9B949}.cal-key.pend{background:#E9B949}
         .cal-c[data-day]{cursor:pointer;transition:transform .15s,box-shadow .15s}.cal-c[data-day]:hover{transform:translateY(-2px);box-shadow:0 8px 18px -10px rgba(11,42,91,.5)}
+        .cal-c.dim{opacity:.25}
         .cal-c.sel{box-shadow:0 0 0 2px #0B2A5B}.cal-c.today{background:#fffbe9}
         .cal-now{align-self:flex-start;background:#E9B949;color:#0B2A5B;border-radius:99px;padding:0 6px;font-size:.65rem;font-weight:800}
         .cal-hol{font-size:.65rem;color:#1B8A9C;font-weight:700;line-height:1.1}
@@ -1320,6 +1450,7 @@
         .ci{background:rgba(255,255,255,.92);border:1px solid #e3dcc9;border-radius:14px;padding:10px 12px;display:flex;flex-direction:column;justify-content:center;gap:2px;animation:viewin .5s both}
         .ci b{font-size:1.5rem;color:#0B2A5B;line-height:1.1}.ci span{font-size:.78rem;color:#5a6a82}
         .ci.hot b{color:#b8860b}.ci.ok b{color:#1b8a4a}.ci.bad b{color:#c0392b}
+        .ci{min-height:78px}.ci.strip{justify-content:flex-end}.ci.strip .bars{height:38px}
         .ci.ring{grid-row:span 2;align-items:center;text-align:center}.ci.wide{grid-column:span 2}.ci.strip{grid-column:span 2}
         .ci .ci-arc{transition:stroke-dasharray 1s ease;animation:ringdraw 1.1s ease-out both}
         .bars{display:flex;align-items:flex-end;gap:2px;height:46px}.bars i{flex:1;background:#c3d0e6;border-radius:3px 3px 0 0;min-width:3px;transition:height .6s}
@@ -1405,11 +1536,8 @@
       <h2>Quick actions</h2>
       <div class="sd-actions">
         ${act('#/seller/reservations', '📋', 'Reservation requests', 'Accept or decline', nPending || '')}
-        ${act('#/seller/calendar', '📅', 'Calendar', 'See booked and full dates', '')}
-        ${act('#/seller/packages', '🍱', 'Manage packages', allPk + ' package' + (allPk === 1 ? '' : 's'), '')}
-        ${act('#/seller/import', '📝', 'Paste your menu', 'Add many packages fast', '')}
-        ${act('#/seller/prices', '💰', 'Prices &amp; inclusions', 'Edit prices and guests', '')}
-        ${act('#/seller/references', '🖼', 'Category references', refs + ' picture' + (refs === 1 ? '' : 's'), '')}
+        ${act('#/seller/calendar', '📅', 'Calendar bookings', 'See booked and full dates', '')}
+        ${act('#/seller/packages', '🍱', 'Manage packages', allPk + ' package' + (allPk === 1 ? '' : 's') + ' · menu, price, inclusions', '')}
         ${act('#/seller/profile', '🏪', 'Business profile', 'Photo, map, QR code', '')}
       </div>
       <h2>Upcoming approved events</h2>` + (upcoming.length ? `<div class="sd-events">${upcoming.map(r => { const d = new Date(r.date + 'T00:00:00'); return `<div class="sd-ev"><div class="sd-date"><b>${d.getDate()}</b><small>${d.toLocaleString('en-PH', { month: 'short' })}</small></div><div class="info"><b>${esc(pkgById(r.packageId).name)} · ${r.guests} guests</b><span>${esc(userById(r.customerId).fullName)} · ${esc(r.location)}</span></div>${payBadge(r)}</div>`; }).join('')}</div>` : '<div class="sd-empty">No upcoming approved events.</div>') + '</div>');
@@ -1564,7 +1692,8 @@
     if (!requireRole('seller')) return;
     const s = mySeller();
     const pk = db.packages.filter(p => p.sellerId === s.id).sort((a, b) => b.id - a.id);
-    view(`<h1>My catering packages</h1><p><a class="btn" href="#/seller/package/new">+ Add package</a> <a class="btn alt" href="#/seller/import">Paste your menu</a></p>` + (pk.length ? `<div class="tablewrap"><table>
+    view(`<h1>My catering packages</h1><p><a class="btn" href="#/seller/package/new">+ Add package</a></p>
+    <div class="tool-grid"><a class="tool" href="#/seller/import"><span aria-hidden="true">📝</span><b>Paste your menu</b><small>Add many packages fast</small></a><a class="tool" href="#/seller/prices"><span aria-hidden="true">💰</span><b>Prices &amp; inclusions</b><small>Edit prices and guests</small></a><a class="tool" href="#/seller/references"><span aria-hidden="true">🖼</span><b>Category references</b><small>Sample food pictures</small></a></div>` + (pk.length ? `<div class="tablewrap"><table>
       <tr><th>Package</th><th>Price</th><th>Capacity</th><th>Status</th><th></th></tr>
       ${pk.map(p => `<tr><td><b>${esc(p.name)}</b><br><span class="muted small">${esc(p.eventTypes)}</span></td>
         <td>${peso(p.price)}</td><td>${p.minGuests}–${p.maxGuests}</td>
@@ -1614,7 +1743,7 @@
       <tr><th>#</th><th>Customer</th><th>Package</th><th>Event</th><th>Total</th><th>Status</th><th>Down payment</th><th>Action</th></tr>
       ${rows.map(r => {
         const c = userById(r.customerId), booked = approvedCount(s.id, r.date), full = booked >= s.maxPerDay;
-        return `<tr><td>${r.id}</td><td>${esc(c.fullName)}<br><span class="muted small">${esc(c.phone)}</span></td>
+        return `<tr><td>${r.id}</td><td>${esc(c.fullName)}<br><span class="muted small">${esc(c.phone)}</span>${custUuid(r.customerId) ? `<br><a class="small" href="#/chat?customer=${custUuid(r.customerId)}">💬 Message customer</a>` : ''}</td>
           <td>${esc(pkgById(r.packageId).name)}<br><span class="muted small">${r.guests} guests</span></td>
           <td>${fdate(r.date)}<br><span class="muted small">${esc(r.eventType)} · ${esc(r.location)}</span>
             ${r.notes ? `<br><span class="small">“${esc(r.notes)}”</span>` : ''}
@@ -1728,7 +1857,7 @@
     const filter = q.get('status') || 'all';
     const rows = adminSellerRows().filter(s => (!search || (s.shopName + ' ' + s.email).toLowerCase().includes(search)) && (filter === 'all' || s.status === filter));
     view(`<section class="admin-page"><div class="admin-heading"><div><p class="eyebrow">Marketplace</p><h1>Manage sellers</h1><p class="muted">Keep track of seller applications and account status.</p></div><a class="btn alt" href="#/admin">Dashboard</a></div>${adminNav('sellers')}<form class="seller-toolbar" data-form="seller-filters"><label class="search-field"><span>⌕</span><input name="search" value="${esc(q.get('search') || '')}" placeholder="Search sellers by shop or email" aria-label="Search sellers"></label><select name="status" aria-label="Filter sellers"><option value="all" ${filter === 'all' ? 'selected' : ''}>All</option><option value="pending" ${filter === 'pending' ? 'selected' : ''}>Pending</option><option value="approved" ${filter === 'approved' ? 'selected' : ''}>Approved</option><option value="banned" ${filter === 'banned' ? 'selected' : ''}>Banned</option></select><button class="btn" type="submit">Search</button></form>
-      <div class="seller-summary"><span><b>${rows.length}</b> seller${rows.length === 1 ? '' : 's'} shown</span><span class="muted small">${filter === 'all' ? 'All statuses' : filter.charAt(0).toUpperCase() + filter.slice(1)}</span></div>
+      <div class="seller-summary"><span class="big"><b>${rows.length}</b> Seller${rows.length === 1 ? '' : 's'} shown</span><span class="muted small">${filter === 'all' ? 'All statuses' : filter.charAt(0).toUpperCase() + filter.slice(1)}</span></div>
       <div class="tablewrap admin-table"><table><tr><th>Shop Name</th><th>Email</th><th>Status</th><th>Joined Date</th><th>Actions</th></tr>${rows.map(adminSellerRow).join('')}</table></div>${rows.length ? '' : '<div class="empty-state"><h3>No sellers found</h3><p class="muted">Try another search or status filter.</p></div>'}</section>`);
   });
 
@@ -1805,6 +1934,7 @@
   const forms = {
     async login(d) {
       const username = d.username.trim();
+      try { if (d.remember) localStorage.setItem('nc_user', username); else localStorage.removeItem('nc_user'); } catch (e) { /* storage may be blocked */ }
       // The database logs people in by email, so first look up the email that belongs to the username.
       const { data: email, error: lookupError } = await sb.rpc('email_for_username', { u: username });
       if (lookupError) throw lookupError;
@@ -1831,6 +1961,27 @@
       go(homeFor(user));
     },
 
+    async forgot(d) {
+      const who = d.who.trim();
+      let email = who.includes('@') ? who : null;
+      if (!email) { const { data } = await sb.rpc('email_for_username', { u: who }); email = data || null; }
+      if (email) { const { error } = await sb.auth.resetPasswordForEmail(email, { redirectTo: location.origin + location.pathname }); if (error) console.error(error); }
+      flash('If that account exists, a reset link was sent to its email. Check your inbox (and spam), then follow the link.', 'success');
+      go('#/login');
+    },
+
+    async resetpw(d) {
+      if (!session) { flash('Open the reset link from your email first.', 'error'); return go('#/forgot'); }
+      if (!pwRuleOk(d.password)) { flash(PW_RULE, 'error'); return route(); }
+      if (d.password !== d.confirm) { flash('Passwords do not match.', 'error'); return route(); }
+      const { error } = await sb.auth.updateUser({ password: d.password });
+      if (error) { flash(error.message, 'error'); return route(); }
+      recovering = false;
+      await sb.auth.signOut(); session = null; await refreshAll();
+      flash('Password changed. You can now log in with your new password.', 'success');
+      go('#/login');
+    },
+
     async register(d) {
       const errors = [];
       const username = d.username.trim();
@@ -1838,7 +1989,7 @@
       if (username.length < 3) errors.push('Username must be at least 3 characters.');
       if (!d.email.includes('@')) errors.push('Enter a valid email address.');
       if (!d.fullName.trim()) errors.push('Full name is required.');
-      if (d.password.length < 6) errors.push('Password must be at least 6 characters.');
+      if (!pwRuleOk(d.password)) errors.push(PW_RULE);
       if (d.password !== d.confirm) errors.push('Passwords do not match.');
       if (d.role === 'seller' && (!d.business.trim() || !d.address.trim())) errors.push('Business name and address are required for sellers.');
       if (!errors.length) {
@@ -2037,6 +2188,18 @@
       importDraft = null;
       flash(rows.length + ' package' + (rows.length === 1 ? '' : 's') + ' added. You can edit each one anytime.', 'success');
       go('#/seller/packages');
+    },
+
+    async 'chat-send'(d, form) {
+      if (!me()) return go('#/login');
+      const text = String(d.body || '').trim(), image = d.image || '';
+      if (!text && !image) { flash('Type a message or choose a picture.', 'error'); return route(); }
+      const url = image ? await uploadImage(image, 'chat') : '';
+      const { error } = await sb.rpc('send_message', { p_seller: Number(form.dataset.seller), p_customer: form.dataset.customer, p_body: text, p_image: url });
+      if (error) throw error;
+      $('#chatText').value = ''; $('#chatData').value = ''; $('#chatFile').value = '';
+      $('#chatPrev').classList.add('hidden'); $('#chatPrevX').classList.add('hidden');
+      if (chatReload) await chatReload();
     },
 
     async 'edit-user'(d, form) {
@@ -2293,12 +2456,35 @@
     if (e.target.id === 'referenceFile') readReference(e.target.files && e.target.files[0]);
     if (e.target.id === 'concernFile') readImageInto(e.target.files && e.target.files[0], '#concernData', '#concernPrev', 1100);
     if (e.target.id === 'qrFile') readImageInto(e.target.files && e.target.files[0], '#qrData', '#qrPrev', 1000);
+    if (e.target.id === 'chatFile') { readImageInto(e.target.files && e.target.files[0], '#chatData', '#chatPrev', 1100); const x = $('#chatPrevX'); if (x && e.target.files && e.target.files[0]) x.classList.remove('hidden'); }
     if (e.target.id === 'proofFile') readImageInto(e.target.files && e.target.files[0], '#proofData', '#proofPrev', 1100);
     if (e.target.classList && e.target.classList.contains('cmp-box')) {
       const boxes = [...document.querySelectorAll('.cmp-box')];
       const n = boxes.filter(b => b.checked).length;
       $('#cnt').textContent = n; $('#cmpbtn').disabled = n < 2;
       boxes.forEach(b => { if (!b.checked) b.disabled = n >= 4; });
+    }
+  });
+
+  document.addEventListener('click', e => {
+    const eye = e.target.closest('[data-eye]');
+    if (eye) {
+      const i = eye.parentNode.querySelector('input'), show = i.type === 'password';
+      i.type = show ? 'text' : 'password'; eye.classList.toggle('on', show); eye.setAttribute('aria-label', show ? 'Hide password' : 'Show password');
+      return;
+    }
+    const lg = e.target.closest('.lg');
+    if (lg) {
+      const root = lg.closest('.cal'); if (!root) return;
+      const f = lg.dataset.lg, was = lg.classList.contains('on');
+      root.querySelectorAll('.lg').forEach(x => x.classList.remove('on'));
+      const cur = was ? '' : f; if (cur) lg.classList.add('on');
+      let n = 0;
+      root.querySelectorAll('.cal-c[data-day]').forEach(c => {
+        const ok = !cur || (cur === 'full' && c.classList.contains('full')) || (cur === 'part' && c.classList.contains('part')) || (cur === 'pend' && !!c.querySelector('.cal-p'));
+        c.classList.toggle('dim', !ok); if (cur && ok) n++;
+      });
+      const m = root.querySelector('#lgmsg'); if (m) m.textContent = cur ? (n + ' day' + (n === 1 ? '' : 's') + ' shown. Tap again to clear.') : 'Tap one to highlight those days.';
     }
   });
 
@@ -2318,7 +2504,7 @@
     if (tok === navTok) route();
   }
 
-  sb.auth.onAuthStateChange((_event, s) => { session = s; });
+  sb.auth.onAuthStateChange((_event, s) => { session = s; if (_event === 'PASSWORD_RECOVERY') recovering = true; });
   window.addEventListener('hashchange', navigate);
 
   (async function start() {
@@ -2327,6 +2513,7 @@
       const { data } = await sb.auth.getSession();
       session = data.session;
       await refreshAll();
+      if (recovering) history.replaceState(null, '', '#/reset-password');
       route();
     } catch (err) { fatal(err); }
   })();

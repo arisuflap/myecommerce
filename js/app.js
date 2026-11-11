@@ -607,9 +607,9 @@
             ${s.email ? `<li>✉️ <a href="mailto:${esc(s.email)}">${esc(s.email)}</a></li>` : ''}
           </ul>
           ${s.description ? `<p>${esc(s.description)}</p>` : ''}
-          <p><a class="btn sm" href="${esc(mapOpenUrl(s))}" target="_blank" rel="noopener">Open in Google Maps</a>
-             <a class="btn alt sm" href="${esc(mapDirUrl(s))}" target="_blank" rel="noopener">Get directions</a>
-             ${(!me() || me().role === 'customer') && !own ? `<a class="btn sm" href="${me() ? '#/chat?seller=' + s.id : '#/login'}">💬 Message this caterer</a>` : ''}</p>
+          <p class="btnrow"><a class="btn sm" href="${esc(mapOpenUrl(s))}" target="_blank" rel="noopener">Open in Google Maps</a>
+             <a class="btn alt sm" href="${esc(mapDirUrl(s))}" target="_blank" rel="noopener">Get directions</a></p>
+          ${(!me() || me().role === 'customer') && !own ? `<p class="btnrow msgrow"><a class="btn" href="${me() ? '#/chat?seller=' + s.id : '#/login'}">💬 Message this caterer</a><span class="muted small">Ask a question or send a picture.</span></p>` : ''}
         </div>
         <div class="mapbox"><iframe title="Map of ${esc(s.businessName)}" src="${esc(mapEmbedSrc(s))}" loading="lazy" allowfullscreen referrerpolicy="no-referrer-when-downgrade"></iframe></div>
       </div>
@@ -2505,6 +2505,19 @@
   }
 
   sb.auth.onAuthStateChange((_event, s) => { session = s; if (_event === 'PASSWORD_RECOVERY') recovering = true; });
+  // Menu button for phones (the CSS shows it only on small screens)
+  (function () {
+    const bar = document.querySelector('.nav-in'), nv = document.getElementById('nav');
+    if (!bar || !nv) return;
+    const t = document.createElement('button');
+    t.type = 'button'; t.id = 'navToggle'; t.className = 'nav-toggle'; t.setAttribute('aria-label', 'Menu'); t.setAttribute('aria-expanded', 'false');
+    t.innerHTML = '<span></span><span></span><span></span>';
+    bar.insertBefore(t, nv);
+    const close = () => { nv.classList.remove('open'); t.setAttribute('aria-expanded', 'false'); };
+    t.addEventListener('click', () => { const o = nv.classList.toggle('open'); t.setAttribute('aria-expanded', String(o)); });
+    nv.addEventListener('click', e => { if (e.target.closest('a,button')) close(); });
+    window.addEventListener('hashchange', close);
+  })();
   window.addEventListener('hashchange', navigate);
 
   (async function start() {

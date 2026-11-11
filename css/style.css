@@ -272,3 +272,31 @@ footer a:hover{text-decoration:underline;color:#f3c862}
 .chat-hint{padding:0 16px 12px;margin:0}
 .chat-empty{text-align:center;margin:auto}
 @media (max-width:560px){.msg{max-width:88%}}
+
+.btnrow{display:flex;flex-wrap:wrap;gap:10px;align-items:center}
+.btnrow .btn{margin:0}
+.msgrow{margin-top:14px}
+
+/* Login row: "Remember me" and "Forgot password?" on one straight line */
+.loginrow{margin:10px 0 16px;min-height:24px}
+.stack .loginrow .remember{margin:0;display:flex;align-items:center;gap:8px;font-size:.92rem;font-weight:500}
+.loginrow .remember input{width:16px;height:16px;margin:0;flex:none;accent-color:#0B2A5B}
+.loginrow a{line-height:24px;display:block}
+
+/* ---- Footer stays at the bottom, and the phone menu ---- */
+body{min-height:100vh;display:flex;flex-direction:column}
+main.wrap{flex:1 0 auto;width:100%;box-sizing:border-box}
+footer{flex:none}
+.nav-toggle{display:none;align-items:center;justify-content:center;flex-direction:column;gap:5px;width:46px;height:46px;border-radius:12px;border:1px solid rgba(255,255,255,.35);background:transparent;cursor:pointer;padding:0}
+.nav-toggle span{display:block;width:22px;height:2.5px;border-radius:2px;background:#fff;transition:transform .2s,opacity .2s}
+.nav-toggle[aria-expanded="true"] span:nth-child(1){transform:translateY(7.5px) rotate(45deg)}
+.nav-toggle[aria-expanded="true"] span:nth-child(2){opacity:0}
+.nav-toggle[aria-expanded="true"] span:nth-child(3){transform:translateY(-7.5px) rotate(-45deg)}
+@media(max-width:700px){
+  .nav-in{justify-content:space-between;min-height:62px}
+  .nav-toggle{display:inline-flex}
+  #nav{display:none;width:100%;flex-direction:column;align-items:stretch;justify-content:flex-start;gap:2px;padding:4px 0 12px}
+  #nav.open{display:flex}
+  #nav a,#nav .link{padding:13px 14px;border-radius:10px;font-size:1rem;text-align:left;background:none;border:0;width:100%;box-sizing:border-box}
+  #nav a.btn{margin:8px 0 0;text-align:center}
+}
